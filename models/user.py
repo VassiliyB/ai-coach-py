@@ -1,0 +1,43 @@
+from typing import TYPE_CHECKING, List, Optional
+from sqlalchemy import BigInteger, Boolean, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from models.base import Base
+
+if TYPE_CHECKING:
+    from models.athlete_profile import AthleteProfile
+    from models.training_plan import TrainingPlan
+    from models.message import ChatMessage
+
+
+class AppUser(Base):
+    __tablename__ = "app_users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True, nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    garmin_linked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Связи (relationship). Обратите внимание: имя класса передается СТРОКОЙ
+    profile: Mapped[Optional["AthleteProfile"]] = relationship(
+        "AthleteProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    training_plans: Mapped[List["TrainingPlan"]] = relationship(
+        "TrainingPlan",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+    chat_messages: Mapped[List["ChatMessage"]] = relationship(
+        "ChatMessage",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
