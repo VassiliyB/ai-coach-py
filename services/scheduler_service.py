@@ -74,6 +74,7 @@ class TrainingSchedulerService:
                 week_number=weeks_elapsed,
                 week_start=target_monday.strftime("%d.%m.%Y"),
                 week_end=target_sunday.strftime("%d.%m.%Y"),
+                total_weeks=plan.total_weeks,
             )
 
             # 2. Сохранение в БД

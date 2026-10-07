@@ -1,88 +1,167 @@
 # services/message_service.py
 import re
-from typing import List
+from typing import List, Tuple
 
-TELEGRAM_MAX_LENGTH = 4000
+TELEGRAM_MAX_LENGTH = 4000   # лимит Telegram 4096, оставляем запас
+_CHUNK_RESERVE = 200         # запас под закрывающие и повторно открываемые теги
 
-# Регулярное выражение для поиска легитимных тегов Telegram
-VALID_TELEGRAM_TAG_PATTERN = re.compile(
-    r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote)>|<a\s+href=[\"'][^\"']+[\"']>",
+_FORMAT_TAGS = "b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote|a"
+
+# Любой допустимый тег Telegram (открывающий или закрывающий)
+_TAG_RE = re.compile(rf"<(/?)({_FORMAT_TAGS})\b[^>]*>", re.IGNORECASE)
+
+# Теги, которые сохраняем как есть: <a> только с href, остальные без атрибутов
+_KEEP_TAG_RE = re.compile(
+    r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|blockquote)>"
+    r"|</a>"
+    r"|<a\s+href=[\"'][^\"'<>]+[\"']>",
     re.IGNORECASE,
 )
 
+_ENTITY_AMP_RE = re.compile(r"&(?!(?:amp|lt|gt|quot|#\d+);)")
+
 
 class MessageService:
-    """Сервис для очистки, форматирования и безопасной нарезки сообщений для Telegram."""
+    """Очистка, нормализация и безопасная нарезка сообщений для Telegram (parse_mode=HTML)."""
+
+    # ---------------- Санитизация ----------------
 
     @staticmethod
     def sanitize_telegram_html(text: str) -> str:
-        """Очищает и нормализует HTML для Telegram Bot API."""
+        """Приводит ответ LLM к HTML, который принимает Telegram Bot API."""
         if not text:
             return ""
 
-        # 1. Заменяем markdown жирный шрифт (**текст**) на <b>текст</b>
-        text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text)
+        # 0. Служебные теги <data>, которые модель могла повторить из промпта
+        text = re.sub(r"</?data>", "", text, flags=re.IGNORECASE)
 
-        # 2. Удаляем неподдерживаемые блочные HTML-теги, заменяя их на перенос строки
-        unsupported_tags = [
-            r"</?p>", r"</?div>", r"</?h[1-6]>",
-            r"</?ul>", r"</?ol>", r"</?li>", r"<br\s*/?>"
-        ]
-        for pattern in unsupported_tags:
-            text = re.sub(pattern, "\n", text, flags=re.IGNORECASE)
+        # 1. Markdown -> HTML
+        text = re.sub(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", r"<b>\1</b>", text, flags=re.MULTILINE)
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+        text = re.sub(r"^(\s*)[*-]\s+", r"\1• ", text, flags=re.MULTILINE)
+        text = re.sub(r"^\s*([-*_]\s*){3,}$", "", text, flags=re.MULTILINE)   # горизонтальные линии
 
-        # 3. Безопасное экранирование сырых знаков < и > через плейсхолдеры
-        placeholders: List[str] = []
+        # 2. Неподдерживаемые блочные теги
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<li[^>]*>", "• ", text, flags=re.IGNORECASE)
+        text = re.sub(r"</li>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<h[1-6][^>]*>", "<b>", text, flags=re.IGNORECASE)
+        text = re.sub(r"</h[1-6]>", "</b>\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</?(?:p|div|ul|ol|span)[^>]*>", "\n", text, flags=re.IGNORECASE)
 
-        def _save_tag(match: re.Match) -> str:
-            placeholders.append(match.group(0))
-            return f"___TG_TAG_{len(placeholders) - 1}___"
+        # 3. Прячем допустимые теги, экранируем всё остальное, возвращаем теги
+        saved: List[str] = []
 
-        # Прячем легитимные теги
-        text = VALID_TELEGRAM_TAG_PATTERN.sub(_save_tag, text)
+        def _save(match: re.Match) -> str:
+            saved.append(match.group(0))
+            return f"\x00{len(saved) - 1}\x00"
 
-        # Теперь все оставшиеся < и > — сырые математические знаки
+        text = _KEEP_TAG_RE.sub(_save, text)
+        text = _ENTITY_AMP_RE.sub("&amp;", text)
         text = text.replace("<", "&lt;").replace(">", "&gt;")
+        text = re.sub(r"\x00(\d+)\x00", lambda m: saved[int(m.group(1))], text)
 
-        # Возвращаем легитимные теги обратно
-        for idx, tag in enumerate(placeholders):
-            text = text.replace(f"___TG_TAG_{idx}___", tag)
+        # 4. Правильная вложенность тегов
+        text = MessageService._balance_tags(text)
 
-        # 4. Балансировка незакрытых тегов (если LLM оборвала ответ на середине)
-        for tag in ["b", "i", "code", "pre", "blockquote"]:
-            open_count = len(re.findall(rf"<{tag}\b[^>]*>", text, re.IGNORECASE))
-            close_count = len(re.findall(rf"</{tag}>", text, re.IGNORECASE))
-            if open_count > close_count:
-                text += f"</{tag}>" * (open_count - close_count)
-
-        # 5. Убираем избыточные пустые строки
+        # 5. Лишние пустые строки
+        text = re.sub(r"[ \t]+\n", "\n", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
     @staticmethod
+    def _balance_tags(text: str) -> str:
+        """Удаляет «осиротевшие» закрывающие теги и закрывает незакрытые в правильном порядке."""
+        out: List[str] = []
+        stack: List[str] = []
+        pos = 0
+
+        for m in _TAG_RE.finditer(text):
+            out.append(text[pos:m.start()])
+            pos = m.end()
+            closing, name = bool(m.group(1)), m.group(2).lower()
+
+            if not closing:
+                stack.append(name)
+                out.append(m.group(0))
+            elif name in stack:
+                # закрываем вложенные теги, которые модель забыла закрыть
+                while stack:
+                    top = stack.pop()
+                    out.append(f"</{top}>")
+                    if top == name:
+                        break
+            # иначе закрывающий тег без пары, пропускаем
+
+        out.append(text[pos:])
+        out.extend(f"</{name}>" for name in reversed(stack))
+        return "".join(out)
+
+    # ---------------- Нарезка ----------------
+
+    @staticmethod
+    def _open_tags(chunk: str) -> List[Tuple[str, str]]:
+        """Стек незакрытых тегов (имя, исходный тег) в конце фрагмента."""
+        stack: List[Tuple[str, str]] = []
+        for m in _TAG_RE.finditer(chunk):
+            closing, name = bool(m.group(1)), m.group(2).lower()
+            if not closing:
+                stack.append((name, m.group(0)))
+            else:
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i][0] == name:
+                        del stack[i:]
+                        break
+        return stack
+
+    @staticmethod
+    def _split_long_line(line: str, limit: int) -> List[str]:
+        """Режет слишком длинную строку по пробелам, не разрывая тег."""
+        parts: List[str] = []
+        while len(line) > limit:
+            cut = line.rfind(" ", 0, limit)
+            if cut <= 0:
+                cut = limit
+            head = line[:cut]
+            # не режем внутри тега: если после последнего '<' нет '>', переносим '<' в следующую часть
+            lt, gt = head.rfind("<"), head.rfind(">")
+            if lt > gt and lt > 0:
+                cut = lt
+                head = line[:cut]
+            parts.append(head)
+            line = line[cut:].lstrip(" ")
+        if line:
+            parts.append(line)
+        return parts
+
+    @staticmethod
     def chunk_message(text: str, max_length: int = TELEGRAM_MAX_LENGTH) -> List[str]:
-        """Разбивает длинный текст на части по границе строк, не разрывая форматирование."""
+        """Делит текст на части по строкам; теги закрываются в конце части и открываются заново в следующей."""
         if len(text) <= max_length:
             return [text]
 
-        chunks: List[str] = []
-        lines = text.split("\n")
-        current_chunk = ""
+        limit = max_length - _CHUNK_RESERVE
+        raw: List[str] = []
+        current = ""
 
-        for line in lines:
-            if len(current_chunk) + len(line) + 1 > max_length:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                    current_chunk = ""
-                if len(line) > max_length:
-                    for i in range(0, len(line), max_length):
-                        chunks.append(line[i:i + max_length])
-                else:
-                    current_chunk = line + "\n"
-            else:
-                current_chunk += line + "\n"
+        for line in text.split("\n"):
+            pieces = MessageService._split_long_line(line, limit) if len(line) > limit else [line]
+            for piece in pieces:
+                if len(current) + len(piece) + 1 > limit:
+                    if current.strip():
+                        raw.append(current.rstrip("\n"))
+                    current = ""
+                current += piece + "\n"
 
-        if current_chunk.strip():
-            chunks.append(current_chunk.strip())
+        if current.strip():
+            raw.append(current.rstrip("\n"))
 
-        return chunks
+        result: List[str] = []
+        carry: List[Tuple[str, str]] = []
+        for part in raw:
+            body = "".join(tag for _, tag in carry) + part
+            carry = MessageService._open_tags(body)
+            body += "".join(f"</{name}>" for name, _ in reversed(carry))
+            if body.strip():
+                result.append(body)
+        return result

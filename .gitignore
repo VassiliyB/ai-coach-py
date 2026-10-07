@@ -12,8 +12,8 @@ __pycache__/
 
 # === Секреты и конфиденциальные данные (КРИТИЧНО) ===
 .env
-.env.*
-!.env.example
+.env.exampl
+!.env.exampl
 
 # === Токены авторизации Garmin Connect ===
 .garmin_tokens/

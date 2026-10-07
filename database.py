@@ -14,7 +14,7 @@ from models import Base  # Импортируем из __init__.py, чтобы �
 
 # 1. Асинхронный движок (Engine)
 engine = create_async_engine(
-    url=settings.DATABASE_URL,
+    url=settings.DATABASE_URL.get_secret_value(),
     echo=False,
     pool_size=10,
     max_overflow=20,

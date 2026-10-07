@@ -1,40 +1,47 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 from pathlib import Path
+
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Корень проекта: папка, где лежит этот файл
+BASE_DIR = Path(__file__).resolve().parent
 
 
 class Settings(BaseSettings):
     """
-    Класс конфигурации приложения.
-    Автоматически считывает переменные из окружения или файла .env,
-    проверяя их наличие и типы данных.
+    Конфигурация приложения.
+    Читает переменные из окружения или файла .env и валидирует их при старте.
     """
+
     # Telegram
-    TELEGRAM_BOT_TOKEN: str = Field(..., description="Токен Telegram бота от BotFather")
+    TELEGRAM_BOT_TOKEN: SecretStr = Field(..., description="Токен Telegram бота от BotFather")
 
     # LLM (Groq)
-    GROQ_API_KEY: str = Field(..., description="API-ключ Groq Cloud")
-    GROQ_BASE_URL: str = Field(default="https://api.groq.com/openai/v1")
-    GROQ_MODEL: str = Field(default="openai/gpt-oss-20b")
+    GROQ_API_KEY: SecretStr = Field(..., description="API-ключ Groq Cloud")
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
 
-    # База данных PostgreSQL (используем асинхронный диалект asyncpg)
-    DATABASE_URL: str = Field(..., description="URL подключения к БД Postgres")
+    # База данных PostgreSQL (асинхронный диалект asyncpg)
+    DATABASE_URL: SecretStr = Field(..., description="URL подключения к БД Postgres")
 
-    # Пути файловой системы
-    BASE_DIR: Path = Path(__file__).resolve().parent
-    GARMIN_TOKENS_DIR: Path = Field(default=Path(".garmin_tokens"))
-    KNOWLEDGE_BASE_PATH: Path = Field(default=Path("sports_knowledge.txt"))
+    # Пути (относительные значения из .env считаются от корня проекта)
+    GARMIN_TOKENS_DIR: Path = BASE_DIR / ".garmin_tokens"
+    KNOWLEDGE_BASE_PATH: Path = BASE_DIR / "sports_knowledge.txt"
 
-    # Настройки Pydantic: чтение из .env файла в кодировке UTF-8
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=BASE_DIR / ".env",
         env_file_encoding="utf-8",
-        extra="ignore"  # Игнорировать лишние переменные
+        extra="ignore",
     )
 
+    @field_validator("GARMIN_TOKENS_DIR", "KNOWLEDGE_BASE_PATH")
+    @classmethod
+    def _make_absolute(cls, value: Path) -> Path:
+        """Относительные пути привязываем к корню проекта."""
+        return value if value.is_absolute() else (BASE_DIR / value).resolve()
 
-# Создаем синглтон конфигурации для использования во всем приложении
+
 settings = Settings()
 
-# Автоматически создаем папку для токенов Garmin, если её нет
+# Папка для токенов Garmin создаётся при старте, если её нет
 settings.GARMIN_TOKENS_DIR.mkdir(parents=True, exist_ok=True)
