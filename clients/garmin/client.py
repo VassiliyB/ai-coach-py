@@ -1,11 +1,12 @@
 import asyncio
 import logging
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
     GarminConnectTooManyRequestsError,
 )
 
@@ -17,26 +18,80 @@ logger = logging.getLogger(__name__)
 
 
 class GarminClient:
-    """Асинхронный клиент для взаимодействия с Garmin Connect."""
+    """Асинхронный клиент для взаимодействия с Garmin Connect с поддержкой MFA."""
 
     def __init__(self, storage: Optional[GarminTokenStorage] = None) -> None:
         self.storage = storage or GarminTokenStorage()
+        # Хранилище временных клиентов в процессе прохождения MFA: {chat_id: (Garmin, client_state)}
+        self._pending_auth: Dict[int, Tuple[Garmin, Any]] = {}
 
     def has_saved_tokens(self, chat_id: int) -> bool:
         return self.storage.has_tokens(chat_id)
 
-    # ---------------- Синхронные воркеры (для системных потоков) ----------------
+    # ---------------- Вспомогательное сохранение токенов ----------------
 
-    def _login_sync(self, chat_id: int, email: str, password: str) -> None:
+    def _save_tokens_to_storage(self, client: Garmin, chat_id: int) -> None:
+        """Сохраняет токены сессии на диск для garminconnect >= 0.3.x."""
+        user_dir = str(self.storage.get_user_dir(chat_id))
+
+        # 1. Для garminconnect >= 0.3.x метод dump живет в client.client
+        if hasattr(client, "client") and hasattr(client.client, "dump"):
+            client.client.dump(user_dir)
+            logger.info("Токены успешно сохранены через client.client.dump в %s", user_dir)
+        # 2. Запасные варианты для разных версий
+        elif hasattr(client, "dump"):
+            client.dump(user_dir)
+            logger.info("Токены успешно сохранены через client.dump в %s", user_dir)
+        elif hasattr(client, "garth") and hasattr(client.garth, "dump"):
+            client.garth.dump(user_dir)
+
+    # ---------------- Синхронные воркеры входа ----------------
+
+    def _login_step1_sync(self, chat_id: int, email: str, password: str) -> Tuple[str, Optional[Garmin]]:
+        """
+        Первый шаг: отправка логина и пароля.
+        Возвращает:
+          - ("success", client) — если вошли сразу без 2FA
+          - ("needs_mfa", client) — если Garmin выслал код на почту
+        """
         try:
-            client = Garmin(email=email, password=password)
-            client.login()
-            client.garth.dump(str(self.storage.get_user_dir(chat_id)))
-            logger.info("Сессия Garmin успешно сохранена для chat_id=%s", chat_id)
+            user_dir = str(self.storage.get_user_dir(chat_id))
+            client = Garmin(email=email, password=password, return_on_mfa=True)
+            # Передаем tokenstore напрямую — библиотека сохранит токены автоматически
+            status, client_state = client.login(tokenstore=user_dir)
+
+            if status == "needs_mfa":
+                self._pending_auth[chat_id] = (client, client_state)
+                return "needs_mfa", client
+
+            # Дополнительно фиксируем через наш метод
+            self._save_tokens_to_storage(client, chat_id)
+            return "success", client
+
         except GarminConnectTooManyRequestsError as exc:
-            raise GarminRateLimitError("Garmin SSO временно заблокировал доступ (429).") from exc
-        except (GarminConnectAuthenticationError, Exception) as exc:
+            raise GarminRateLimitError("Garmin SSO временно заблокировал доступ (429). Подождите 15 минут.") from exc
+        except GarminConnectAuthenticationError as exc:
             raise GarminAuthError("Неверный email или пароль Garmin.") from exc
+        except Exception as exc:
+            err = str(exc)
+            if "429" in err:
+                raise GarminRateLimitError("Превышен лимит запросов к Garmin (429).") from exc
+            raise GarminClientError(f"Сбой подключения к Garmin: {err}") from exc
+
+    def _login_step2_mfa_sync(self, chat_id: int, mfa_code: str) -> None:
+        """Второй шаг: подтверждение 6-значного кода MFA."""
+        if chat_id not in self._pending_auth:
+            raise GarminAuthError("Сессия ввода кода устарела. Начните вход заново.")
+
+        client, client_state = self._pending_auth[chat_id]
+        try:
+            client.resume_login(client_state, mfa_code)
+            self._save_tokens_to_storage(client, chat_id)
+            self._pending_auth.pop(chat_id, None)
+            logger.info("MFA успешно завершен, токены сохранены для chat_id=%s", chat_id)
+        except Exception as exc:
+            self._pending_auth.pop(chat_id, None)
+            raise GarminAuthError(f"Неверный код подтверждения: {exc}") from exc
 
     def _init_session_sync(self, chat_id: int) -> Garmin:
         if not self.storage.has_tokens(chat_id):
@@ -58,7 +113,6 @@ class GarminClient:
     def _fetch_profile_90d_sync(self, chat_id: int, days: int) -> Dict[str, Any]:
         client = self._init_session_sync(chat_id)
 
-        # 1. VO2 Max
         vo2_max = None
         try:
             metrics = client.get_max_metrics(date.today().isoformat())
@@ -68,7 +122,6 @@ class GarminClient:
         except Exception as e:
             logger.warning("Не удалось получить VO2 Max для chat_id=%s: %s", chat_id, e)
 
-        # 2. Выгрузка беговых тренировок за указанный интервал
         runs: List[Dict[str, Any]] = []
         cutoff = datetime.now() - timedelta(days=days)
         start, limit = 0, 50
@@ -95,8 +148,14 @@ class GarminClient:
 
     # ---------------- Публичный асинхронный интерфейс ----------------
 
-    async def login_with_credentials(self, chat_id: int, email: str, password: str) -> None:
-        await asyncio.to_thread(self._login_sync, chat_id, email, password)
+    async def login_start(self, chat_id: int, email: str, password: str) -> str:
+        """Запуск авторизации. Возвращает 'success' или 'needs_mfa'."""
+        status, _ = await asyncio.to_thread(self._login_step1_sync, chat_id, email, password)
+        return status
+
+    async def login_complete_mfa(self, chat_id: int, mfa_code: str) -> None:
+        """Завершение входа по коду из письма."""
+        await asyncio.to_thread(self._login_step2_mfa_sync, chat_id, mfa_code)
 
     async def get_last_activity(self, chat_id: int) -> Optional[Dict[str, Any]]:
         return await asyncio.to_thread(self._fetch_last_activity_sync, chat_id)
