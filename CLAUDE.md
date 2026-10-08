@@ -50,6 +50,7 @@ services/scheduler_service.py send_week, ежечасная проверка р�
 bot/                        states.py, keyboards.py, middlewares.py (UserLockMiddleware), handlers/{start,sync,plan,analyze,settings}.py
 migrations/                 Alembic (env.py берёт URL из settings)
 tests/                      pytest, без сети, БД и .env
+.github/workflows/ci.yml    CI: ruff и pytest на каждый пуш и pull request в main (Ubuntu, Python 3.12, без секретов)
 ```
 
 ## Команды (Windows, PowerShell, venv)
@@ -136,6 +137,7 @@ python generate_token.py                              # вход в Garmin (сн
 - Правка формулы или порога сопровождается тестом.
 - Перед коммитом `ruff check .` без замечаний. Правила в `pyproject.toml`: E, W, F, I, B, строка до 120 символов; в миграциях проверяются только ошибки (F). Новый синтаксис аннотаций (UP) и `ruff format` пока не включены.
 - Боевые зависимости в `requirements.txt`, инструменты разработки в `requirements-dev.txt`.
+- CI (GitHub Actions) запускает `ruff check .` и `pytest` на чистой Ubuntu без `.env` и секретов: тест, которому нужен `.env`, упадёт там, даже если проходит локально. Новую боевую зависимость сразу добавлять в `requirements.txt`, иначе CI её не найдёт.
 
 ## Модель данных (кратко)
 
@@ -149,12 +151,12 @@ python generate_token.py                              # вход в Garmin (сн
 - Этап 3: `coach_service` (VDOT и зоны), поля профиля, тесты.
 - Этап 4: схемы, валидатор, генератор, темпы, пульс и длительность кодом, рендер; `plan_details` в JSONB; `/plan`, `/test_week` и воскресная рассылка на структурных планах; клиент Claude и выбор провайдера.
 - Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI; поллинг активностей с автоматическим разбором новых пробежек; часовые пояса пользователей (`/timezone`, определение по Garmin, рассылка по местному времени); блокировки тяжёлых операций на пользователя.
-- Этап 6: `requirements-dev.txt`, ruff (`pyproject.toml`), исправлены найденные им замечания.
+- Этап 6: `requirements-dev.txt`, ruff (`pyproject.toml`), исправлены найденные им замечания; CI на GitHub Actions.
 
 Проверено скриптами на живой модели и локальной БД (запись с откатом): генерация макроплана и недели, сохранение и чтение JSONB, `send_week` для нового, старого и завершённого плана. Живая проверка в Telegram (`/sync`, `/plan`, `/test_week`) ещё не подтверждена.
 
 Дальше:
-- Этап 6: CI (GitHub Actions: ruff и pytest), `/delete_me`, Docker.
+- Этап 6: `/delete_me`, Docker.
 
 ## Известные ограничения
 
