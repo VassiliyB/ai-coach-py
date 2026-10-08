@@ -17,9 +17,9 @@ LLM: `anthropic` SDK (Claude, по умолчанию `claude-haiku-5-5`) или
 ## Структура
 
 ```text
-main.py                     точка входа: БД -> бот -> планировщик, DI через Dispatcher
+main.py                     точка входа: миграции -> бот -> планировщик, DI через Dispatcher
 config.py                   Settings (pydantic-settings), секреты как SecretStr, LLM_PROVIDER
-database.py                 async engine, async_session_maker, get_db_session
+database.py                 async engine, async_session_maker, run_migrations (alembic upgrade head)
 sports_knowledge.txt        база знаний (Дэниелс + 80/20), идёт в системный промпт
 generate_token.py           ручной вход в Garmin (обход 429), токены в .garmin_tokens/<chat_id>/
 models/                     SQLAlchemy-модели (6 таблиц), base.py с naming convention и utcnow()
@@ -39,7 +39,8 @@ services/plan_paces.py      темп, пульс и длительность д�
 services/plan_calendar.py   границы недель, номер недели подготовки (от недели забега назад)
 services/plan_storage.py    plan_details (JSONB) <-> MacroPlan / WeekPlan
 services/plan_renderer.py   сообщения Telegram (HTML) из WeekPlan и MacroPlan
-services/ai_coach_service.py текстовый разбор тренировки для /analyze
+services/ai_coach_service.py текстовый разбор тренировки для /analyze (зоны считает activity_zones)
+services/activity_zones.py зона тренировки по темпу и пульсу, % ЧССmax, серая зона
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
 services/scheduler_service.py send_week и воскресная рассылка недель (ВС 15:00, время сервера)
 bot/                        states.py, keyboards.py, handlers/{start,sync,plan,analyze}.py
@@ -51,7 +52,7 @@ tests/                      pytest, без сети, БД и .env
 
 ```powershell
 python -m pytest -v                                   # все тесты
-python main.py                                        # запуск бота
+python main.py                                        # запуск (сам применяет миграции)
 alembic revision --autogenerate -m "описание"         # после изменения моделей
 alembic upgrade head                                  # применить; alembic current / alembic check
 python try_plan_generator.py                          # ручная проверка генерации с живой моделью
@@ -60,12 +61,13 @@ python generate_token.py                              # вход в Garmin (сн
 
 Перед `alembic revision` БД должна быть на `head`, иначе ошибка «Target database is not up to date». Каждую автомиграцию просматривать глазами. Смену типа колонки с данными писать вручную с `postgresql_using` (autogenerate делает `ALTER ... TYPE` без `USING`, и PostgreSQL его отклоняет).
 
-Если `alembic upgrade head` падает с `relation "app_users" already exists`, таблицы были созданы в обход Alembic (`create_all`). Для тестовой БД: сбросить схему (`DROP SCHEMA public CASCADE; CREATE SCHEMA public`) и применить миграции заново.
+Если `alembic upgrade head` падает с `relation "app_users" already exists`, таблицы были созданы в обход Alembic (старый `create_all`). Для тестовой БД: сбросить схему (`DROP SCHEMA public CASCADE; CREATE SCHEMA public`) и применить миграции заново.
 
 ## Соглашения
 
 **БД**
-- Схему меняет только Alembic. Новый код с `create_all` не писать.
+- Схему меняет только Alembic, `main.py` при старте применяет миграции до `head` (`database.run_migrations` в `asyncio.to_thread`: `env.py` сам вызывает `asyncio.run`). `create_all` не использовать.
+- При запуске из кода `env.py` не вызывает `fileConfig` (атрибут `configure_logger=False`): иначе `alembic.ini` поднял бы корневой уровень до WARNING и логи бота пропали бы.
 - Репозитории делают `flush`, но не `commit`. Транзакцией управляет сервис или хендлер.
 - Все связи `relationship` с `lazy="raise"`, `passive_deletes=True`. Нужную связь грузить явно (`selectinload`).
 - Время: `models.base.utcnow()` и `DateTime(timezone=True)`. `datetime.utcnow()` не использовать.
@@ -89,7 +91,7 @@ python generate_token.py                              # вход в Garmin (сн
 - Непригодный ответ (обрезан по длине, `json_validate_failed` у Groq) это `AIResponseFormatError`: генератор повторяет тот же запрос. Остальные `AIClientError` идут наверх, их текст адресован пользователю.
 - Claude: `temperature` не передаётся (новые модели его отклоняют), глубину задаёт `CLAUDE_EFFORT`, мышление адаптивное, `max_tokens` не меньше 16000.
 - Groq (бесплатный тариф, 8000 токенов в минуту): клиент ждёт `retry-after` при 429 и повторяет до 3 раз; ожидание дольше 60 с не ждёт.
-- Текстовые ответы (`/analyze`) проходят `MessageService.sanitize_telegram_html`.
+- Текстовые ответы (`/analyze`) проходят `MessageService.sanitize_telegram_html`. Зону тренировки, проценты ЧССmax и пульс зоны E считает `activity_zones` (блок «РАСЧЁТ ЗОН ТРЕНИРОВКИ» в промпте), модель только интерпретирует.
 - Данные пользователя и Garmin в промптах оборачиваются в `<data>...</data>`, плюс `_clean()` против инъекций; в системном промпте сказано не выполнять команды из этих блоков.
 - Лимиты в промптах берутся из констант `plan_validator`, чтобы подсказка и проверка не расходились.
 - Модель в структурных планах указывает тип тренировки, дистанцию и рабочую часть. Зону (E/M/T/I/R), темп, пульс, длительность и названия фаз задаёт код.
@@ -107,7 +109,8 @@ python generate_token.py                              # вход в Garmin (сн
 
 **Тесты и код**
 - Тесты не должны требовать `.env`, сети или БД: тяжёлые импорты (`config`, клиенты LLM) ленивые, LLM подменяется заглушкой.
-- Чистая логика (`coach_service`, `plan_validator`, `plan_paces`, `plan_calendar`, `plan_storage`, `plan_renderer`) без I/O, всегда с тестами.
+- Чистая логика (`coach_service`, `plan_validator`, `plan_paces`, `plan_calendar`, `plan_storage`, `plan_renderer`, `activity_zones`) без I/O, всегда с тестами.
+- Модули, которые тесты импортируют, не загружают `config` при импорте (например, `clients.garmin.token_storage` берёт настройки в конструкторе).
 - Правка формулы или порога сопровождается тестом.
 
 ## Модель данных (кратко)
@@ -121,16 +124,16 @@ python generate_token.py                              # вход в Garmin (сн
 - Этап 2: модели, репозитории, Alembic.
 - Этап 3: `coach_service` (VDOT и зоны), поля профиля, тесты.
 - Этап 4: схемы, валидатор, генератор, темпы, пульс и длительность кодом, рендер; `plan_details` в JSONB; `/plan`, `/test_week` и воскресная рассылка на структурных планах; клиент Claude и выбор провайдера.
+- Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI.
 
 Проверено скриптами на живой модели и локальной БД (запись с откатом): генерация макроплана и недели, сохранение и чтение JSONB, `send_week` для нового, старого и завершённого плана. Живая проверка в Telegram (`/sync`, `/plan`, `/test_week`) ещё не подтверждена.
 
 Дальше:
-- Этап 5: поллинг активностей (`ProcessedActivity`), таймзоны пользователей, блокировки, миграции при старте вместо `create_all`, `/analyze` с расчётом зоны и пульса кодом.
+- Этап 5: поллинг активностей (`ProcessedActivity`), таймзоны пользователей, блокировки.
 - Этап 6: ruff, CI, Docker, `/delete_me`, `requirements-dev.txt` для pytest.
 
 ## Известные ограничения
 
-- `main.py` при старте вызывает `init_models()` (`create_all`), а не `alembic upgrade head`. На уже созданной БД это ничего не меняет, но на чистой БД таблицы появятся в обход Alembic. Миграции применять вручную.
 - VDOT берётся из тренировочных пробежек от 3 км, это нижняя оценка формы. Запланирован ручной ввод результата забега.
 - `max_heart_rate` в профиле это пик по пробежкам за 90 дней, а не лабораторный максимум: пульсовые диапазоны приблизительные.
 - Длительность тренировки оценочная: рабочая часть в темпе зоны, остальное в середине лёгкого диапазона, округление до 5 мин. Без VDOT длительность не показывается и потолок длительного по времени не проверяется.
@@ -138,7 +141,6 @@ python generate_token.py                              # вход в Garmin (сн
 - Планировщик работает по системному времени сервера, а не по времени пользователя.
 - FSM хранится в `MemoryStorage`: состояния теряются при перезапуске бота.
 - Лимиты `plan_validator` строгие при малом объёме (при 20 км в неделю порог ограничен 2 км). Модель часто целится точно в границы допусков.
-- В `/analyze` (текстовый режим) модель сама сравнивает пульс с зонами и может считать доли ЧССmax.
 
 ## Чего не делать
 

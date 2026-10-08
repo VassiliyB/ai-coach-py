@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -8,8 +9,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from config import settings
-from models import Base  # Импортируем из __init__.py, чтобы подтянулись ВСЕ модели!
+from config import BASE_DIR, settings
 
 
 # 1. Асинхронный движок (Engine)
@@ -44,9 +44,15 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, Any]:
             await session.close()
 
 
-# 4. Функция автосоздания таблиц при старте приложения
-async def init_models() -> None:
-    """Создает таблицы в БД, если их еще нет."""
-    async with engine.begin() as conn:
-        # Здесь Base активно используется, и импорт сверху перестанет быть серым!
-        await conn.run_sync(Base.metadata.create_all)
+# 4. Миграции при старте приложения: схему меняет только Alembic
+def run_migrations() -> None:
+    """alembic upgrade head. Синхронная: env.py сам запускает asyncio.run, поэтому вызывать
+    через asyncio.to_thread, а не из работающего event loop."""
+    # Alembic пишет по строке на каждый плагин уже при импорте: приглушаем до импорта
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(BASE_DIR / "alembic.ini"))
+    cfg.attributes["configure_logger"] = False  # логи уже настроены приложением
+    command.upgrade(cfg, "head")

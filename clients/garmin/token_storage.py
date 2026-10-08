@@ -2,8 +2,6 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from config import settings
-
 
 class GarminTokenStorage:
     """Управление файлами токенов пользователей на диске."""
@@ -11,7 +9,10 @@ class GarminTokenStorage:
     TOKEN_FILENAME = "garmin_tokens.json"
 
     def __init__(self, base_dir: Optional[Path] = None) -> None:
-        self.base_dir = base_dir or settings.GARMIN_TOKENS_DIR
+        if base_dir is None:
+            from config import settings  # ленивый импорт: пакет clients.garmin импортируется в тестах без .env
+            base_dir = settings.GARMIN_TOKENS_DIR
+        self.base_dir = base_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _user_dir(self, chat_id: int) -> Path:

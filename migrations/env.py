@@ -8,8 +8,9 @@ from config import settings
 from models import Base  # подтягивает все модели
 
 config = context.config
-if config.config_file_name is not None:
-    # disable_existing_loggers=False: иначе миграция из main.py отключит логи приложения
+# При запуске из main.py логи уже настроены приложением: fileConfig из alembic.ini
+# поднял бы корневой уровень до WARNING, и INFO-логи бота пропали бы
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

@@ -28,6 +28,7 @@ def parse_last_activity(raw_activity: Dict[str, Any]) -> Dict[str, Any]:
         "distance_km": round(dist_m / 1000.0, 2),
         "duration_minutes": round(dur_s / 60.0, 1),
         "avg_pace_formatted": format_pace(pace_sec),
+        "avg_pace_sec": round(pace_sec, 1) if pace_sec > 0 else None,  # для расчёта зоны кодом
         "avg_heart_rate": raw_activity.get("averageHR"),
         "max_heart_rate": raw_activity.get("maxHR"),
         "aerobic_te": raw_activity.get("aerobicTrainingEffect"),

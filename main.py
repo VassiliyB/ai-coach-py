@@ -9,7 +9,7 @@ from bot.handlers import analyze, plan, start, sync
 from clients.garmin import GarminClient
 from clients.llm import create_llm_client
 from config import settings
-from database import engine, init_models
+from database import engine, run_migrations
 from services.ai_coach_service import AICoachService
 from services.plan_generator import PlanGenerator
 from services.scheduler_service import TrainingSchedulerService
@@ -24,9 +24,9 @@ logger = logging.getLogger("app_main")
 async def main() -> None:
     logger.info("Запуск Garmin AI Coach...")
 
-    # 1. Таблицы БД
-    await init_models()
-    logger.info("Таблицы базы данных проверены/инициализированы.")
+    # 1. Схема БД: миграции Alembic до head (на актуальной БД ничего не делают)
+    await asyncio.to_thread(run_migrations)
+    logger.info("Миграции базы данных применены.")
 
     # 2. Единые экземпляры сервисов (создаются один раз на всё приложение)
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN.get_secret_value())

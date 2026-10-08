@@ -3,9 +3,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from clients.ai_client import AIClient
 from config import settings
+from services.activity_zones import classify_activity, format_activity_zones
+from services.coach_service import TrainingZones
 from services.message_service import MessageService
+from services.plan_generator import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +29,13 @@ class AICoachService:
 
     def __init__(
         self,
-        ai_client: Optional[AIClient] = None,
+        ai_client: Optional[LLMClient] = None,
         knowledge_path: Optional[Path] = None,
     ) -> None:
-        self.ai_client = ai_client or AIClient()
+        if ai_client is None:
+            from clients.llm import create_llm_client  # клиент выбранного провайдера, а не всегда Groq
+            ai_client = create_llm_client()
+        self.ai_client = ai_client
         self.knowledge_base = self._load_knowledge_base(knowledge_path or settings.KNOWLEDGE_BASE_PATH)
         self._system_prompt = self._build_system_prompt()  # собираем один раз
 
@@ -99,8 +104,17 @@ class AICoachService:
         self,
         athlete_profile: Dict[str, Any],
         activity: Dict[str, Any],
+        zones: Optional[TrainingZones] = None,
+        max_hr: Optional[int] = None,
     ) -> str:
-        """Экспресс-анализ завершённой пробежки («План vs Факт»)."""
+        """Экспресс-анализ завершённой пробежки. Зону по темпу и пульсу считает код, модель интерпретирует."""
+        # Зона по темпу имеет смысл только для бега: темп велосипеда или ходьбы с зонами Дэниелса не сравнить
+        pace_sec = activity.get("avg_pace_sec") if activity.get("is_running") else None
+        avg_hr = activity.get("avg_heart_rate")
+        result = classify_activity(pace_sec, avg_hr, zones, max_hr)
+        zones_block = format_activity_zones(
+            result, pace_sec, avg_hr, zones, max_hr, peak_hr=activity.get("max_heart_rate"),
+        )
         user_prompt = (
             "Проведи быстрый разбор завершённой тренировки атлета.\n"
             "ДАННЫЕ ТРЕНИРОВКИ:\n<data>\n"
@@ -116,10 +130,13 @@ class AICoachService:
             "</data>\n\n"
             f"ПРОФИЛЬ АТЛЕТА:\n<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
             f"{self._zones_text(athlete_profile)}\n\n"
+            f"{zones_block}\n\n"
             "Дай краткий вердикт (до 1500 символов):\n"
-            "1. В какую зону попала тренировка по темпу и пульсу? Сравнивай со зонами выше, "
-            "не было ли заваливания в 'серую зону'?\n"
+            "1. Зона тренировки: возьми её ТОЛЬКО из блока «РАСЧЁТ ЗОН ТРЕНИРОВКИ», не пересчитывай "
+            "проценты, зоны и пульсовые диапазоны. Если тренировка попала в серую зону или темп и пульс "
+            "расходятся, объясни, что это значит, и назови возможные причины.\n"
             "2. Оценка физиологической нагрузки (Training Effect).\n"
-            "3. Чёткая рекомендация на завтра (отдых, лёгкая пробежка или день ОФП)."
+            "3. Чёткая рекомендация на завтра (отдых, лёгкая пробежка или день ОФП). Темп и пульс для неё "
+            "бери только из блоков выше."
         )
         return await self._ask(user_prompt, temperature=0.3)
