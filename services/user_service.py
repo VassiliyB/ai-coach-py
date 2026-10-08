@@ -2,12 +2,14 @@
 """Тонкий фасад над репозиториями: управляет транзакциями (commit), логики здесь нет."""
 import logging
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
 from repositories import PlanRepository, UserRepository
+from schemas.plan import MacroPlan, WeekPlan
+from services.plan_storage import plan_to_details
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +45,18 @@ class UserService:
     @staticmethod
     async def save_training_plan(
         session: AsyncSession, user_id: int, target_race: str,
-        race_date: date, total_weeks: int, plan_details: str,
+        race_date: date, total_weeks: int, plan: Union[MacroPlan, str],
     ) -> TrainingPlan:
-        plan = await PlanRepository(session).create_active(
-            user_id, target_race, race_date, total_weeks, plan_details
+        """Строка сохраняется как старый текстовый план (до перевода /plan на MacroPlan)."""
+        saved = await PlanRepository(session).create_active(
+            user_id, target_race, race_date, total_weeks, plan_to_details(plan)
         )
         await session.commit()
-        return plan
+        return saved
+
+    @staticmethod
+    async def get_active_plan(session: AsyncSession, user_id: int) -> Optional[TrainingPlan]:
+        return await PlanRepository(session).get_active(user_id)
 
     @staticmethod
     async def get_all_active_plans_with_users(
@@ -60,10 +67,11 @@ class UserService:
     @staticmethod
     async def save_weekly_plan(
         session: AsyncSession, user_id: int, training_plan_id: int,
-        week_start: date, week_end: date, plan_details: str,
+        week_start: date, week_end: date, plan: Union[WeekPlan, str],
     ) -> WeeklyPlan:
+        """Строка сохраняется как старый текстовый план (до перевода планировщика на WeekPlan)."""
         weekly = await PlanRepository(session).upsert_weekly(
-            user_id, training_plan_id, week_start, week_end, plan_details
+            user_id, training_plan_id, week_start, week_end, plan_to_details(plan)
         )
         await session.commit()
         return weekly

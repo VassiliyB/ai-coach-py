@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -20,7 +20,7 @@ class PlanRepository:
         return result.scalar_one_or_none()
 
     async def create_active(
-        self, user_id: int, target_race: str, race_date: date, total_weeks: int, plan_details: str
+        self, user_id: int, target_race: str, race_date: date, total_weeks: int, plan_details: Dict[str, Any]
     ) -> TrainingPlan:
         """Деактивирует старые планы и создаёт новый в одной транзакции."""
         # UPDATE выполняется сразу (не через autoflush), поэтому частичный unique-индекс не сработает
@@ -47,7 +47,7 @@ class PlanRepository:
         return list((await self.session.execute(stmt)).tuples().all())
 
     async def upsert_weekly(
-        self, user_id: int, training_plan_id: int, week_start: date, week_end: date, plan_details: str
+        self, user_id: int, training_plan_id: int, week_start: date, week_end: date, plan_details: Dict[str, Any]
     ) -> WeeklyPlan:
         """Повторная генерация той же недели перезаписывает расписание, а не плодит дубли."""
         stmt = (

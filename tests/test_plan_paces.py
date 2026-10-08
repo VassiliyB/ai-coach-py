@@ -42,3 +42,27 @@ def test_rest_and_cross_have_no_pace():
 
 def test_missing_zones_gives_empty_string():
     assert pace_text(week().days[1], None) == ""
+
+
+# ---------- Пульс ----------
+
+from services.plan_paces import hr_range_for_zone, hr_text  # noqa: E402
+
+
+def test_hr_ranges_for_max_hr_200():
+    assert hr_range_for_zone("E", 200) == (130, 158)
+    assert hr_range_for_zone("T", 200) == (176, 184)
+    assert hr_range_for_zone("I", 200) == (190, 200)
+
+
+def test_hr_not_defined_for_repetition_and_unknown():
+    assert hr_range_for_zone("R", 200) is None
+    assert hr_range_for_zone(None, 200) is None
+    assert hr_range_for_zone("E", None) is None
+
+
+def test_hr_text_for_days():
+    w = week()
+    assert hr_text(w.days[1], 200) == "176–184 уд/мин"   # пороговая
+    assert hr_text(w.days[0], 200) == ""                  # отдых
+    assert hr_text(w.days[1], None) == ""

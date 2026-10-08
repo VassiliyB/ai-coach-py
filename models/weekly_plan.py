@@ -1,10 +1,11 @@
 from datetime import date, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict
 
 from sqlalchemy import (
     BigInteger, CheckConstraint, Date, DateTime, ForeignKey,
-    Index, Text, UniqueConstraint, func,
+    Index, UniqueConstraint, func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base, utcnow
@@ -27,7 +28,8 @@ class WeeklyPlan(Base):
 
     week_start_date: Mapped[date] = mapped_column(Date, nullable=False)
     week_end_date: Mapped[date] = mapped_column(Date, nullable=False)
-    plan_details: Mapped[str] = mapped_column(Text, nullable=False)
+    # Структурный план (WeekPlan) или {"legacy_text": "..."} для старых текстовых планов
+    plan_details: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
     )

@@ -14,6 +14,7 @@ from models.user import AppUser
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context
 from services.message_service import MessageService
+from services.plan_storage import legacy_text
 from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class TrainingSchedulerService:
             weekly_text = await self.ai_coach.generate_weekly_microcycle(
                 athlete_profile=profile_dict,
                 target_race=plan.target_race,
-                macro_plan_summary=plan.plan_details,
+                macro_plan_summary=legacy_text(plan.plan_details) or "",
                 week_number=weeks_elapsed,
                 week_start=target_monday.strftime("%d.%m.%Y"),
                 week_end=target_sunday.strftime("%d.%m.%Y"),
@@ -84,7 +85,7 @@ class TrainingSchedulerService:
                     training_plan_id=plan.id,
                     week_start=target_monday,
                     week_end=target_sunday,
-                    plan_details=weekly_text,
+                    plan=weekly_text,
                 )
 
             # 3. Отправка пользователю в Telegram

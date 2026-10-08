@@ -10,7 +10,6 @@ from aiogram.types import CallbackQuery, Message
 from bot.keyboards import get_target_distances_keyboard
 from bot.states import PlanCreationStates
 from database import async_session_maker
-from repositories import PlanRepository
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context
 from services.message_service import MessageService
@@ -121,7 +120,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
                 target_race=target_race,
                 race_date=race_date,
                 total_weeks=total_weeks,
-                plan_details=plan_text,
+                plan=plan_text,
             )
 
         await status_msg.delete()
@@ -147,7 +146,7 @@ async def handle_test_week(message: Message) -> None:
         async with async_session_maker() as session:
             user = await UserService.get_or_create_user(session, chat_id)
             profile = await UserService.get_athlete_profile(session, user.id)
-            active_plan = await PlanRepository(session).get_active(user.id)
+            active_plan = await UserService.get_active_plan(session, user.id)
 
         if not active_plan:
             await status_msg.edit_text(

@@ -1,10 +1,11 @@
 from datetime import date, datetime
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Date, DateTime, ForeignKey,
-    Index, Integer, String, Text, func, text,
+    Index, Integer, String, func, text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base, utcnow
@@ -30,7 +31,8 @@ class TrainingPlan(Base):
     target_race: Mapped[str] = mapped_column(String(255), nullable=False)
     race_date: Mapped[date] = mapped_column(Date, nullable=False)
     total_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
-    plan_details: Mapped[str] = mapped_column(Text, nullable=False)
+    # Структурный план (MacroPlan) или {"legacy_text": "..."} для старых текстовых планов
+    plan_details: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
