@@ -36,3 +36,15 @@ def get_target_distances_keyboard() -> InlineKeyboardMarkup:
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+DELETE_CONFIRM = "delete_me:confirm"
+DELETE_CANCEL = "delete_me:cancel"
+
+
+def get_delete_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение /delete_me: удаление необратимо, поэтому только по явной кнопке."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🗑 Удалить всё", callback_data=DELETE_CONFIRM),
+        InlineKeyboardButton(text="Отмена", callback_data=DELETE_CANCEL),
+    ]])

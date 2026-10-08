@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +47,14 @@ class UserRepository:
             .order_by(AppUser.id)
         )
         return list((await self.session.execute(stmt)).tuples().all())
+
+    async def delete_by_chat_id(self, chat_id: int) -> bool:
+        """Удаляет пользователя; профиль, планы, недели, активности и сообщения удаляет ON DELETE CASCADE в БД.
+
+        True, если пользователь был.
+        """
+        stmt = delete(AppUser).where(AppUser.telegram_chat_id == chat_id).returning(AppUser.id)
+        return (await self.session.execute(stmt)).scalar_one_or_none() is not None
 
     async def set_timezone(self, user_id: int, tz: Optional[str]) -> None:
         await self.session.execute(update(AppUser).where(AppUser.id == user_id).values(timezone=tz))

@@ -175,4 +175,6 @@ class GarminClient:
         return await asyncio.to_thread(self._fetch_profile_90d_sync, chat_id, days)
 
     async def clear_session(self, chat_id: int) -> None:
+        """Забывает пользователя: незавершённый вход по MFA в памяти и файл токенов на диске."""
+        self._pending_auth.pop(chat_id, None)
         await asyncio.to_thread(self.storage.clear, chat_id)

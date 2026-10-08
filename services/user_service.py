@@ -27,6 +27,13 @@ class UserService:
         return user
 
     @staticmethod
+    async def delete_user(session: AsyncSession, chat_id: int) -> bool:
+        """Удаляет пользователя и все его данные в БД (каскадом). True, если пользователь был."""
+        deleted = await UserRepository(session).delete_by_chat_id(chat_id)
+        await session.commit()
+        return deleted
+
+    @staticmethod
     async def set_timezone(session: AsyncSession, user_id: int, tz: str) -> None:
         """tz уже нормализован (services.user_time.normalize_timezone)."""
         await UserRepository(session).set_timezone(user_id, tz)

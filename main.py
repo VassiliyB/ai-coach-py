@@ -54,6 +54,7 @@ async def main() -> None:
         ai_coach=ai_coach,
         plan_generator=plan_generator,
         scheduler_service=scheduler_service,
+        user_locks=user_locks,
     )
 
     # Хендлеры с флагом user_lock не запускаются, пока у пользователя идёт другая тяжёлая операция.

@@ -47,7 +47,8 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
             "• <code>/sync</code> — обновить спортивный паспорт за 90 дней\n"
             "• <code>/plan</code> — составить макроплан к забегу\n"
             "• <code>/analyze</code> — разобрать последнюю пробежку\n"
-            "• <code>/timezone</code> — часовой пояс для расписаний",
+            "• <code>/timezone</code> — часовой пояс для расписаний\n"
+            "• <code>/delete_me</code> — удалить все свои данные",
             parse_mode="HTML",
         )
     else:
