@@ -20,6 +20,7 @@ from services.plan_calendar import DATE_FORMAT, next_week_dates, plan_week_numbe
 from services.plan_generator import PlanGenerator
 from services.plan_renderer import render_week
 from services.plan_storage import parse_macro
+from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now, local_today
 
@@ -46,12 +47,14 @@ class TrainingSchedulerService:
         plan_generator: PlanGenerator,
         activity_poller: Optional[ActivityPoller] = None,
         poll_minutes: int = 0,
+        locks: Optional[UserLocks] = None,
     ) -> None:
         """activity_poller и poll_minutes > 0 включают опрос Garmin с этим интервалом."""
         self.bot = bot
         self.plan_generator = plan_generator
         self.activity_poller = activity_poller if poll_minutes > 0 else None
         self.poll_minutes = poll_minutes
+        self.locks = locks or UserLocks()
         self.scheduler = AsyncIOScheduler()
 
     async def send_week(
@@ -140,11 +143,14 @@ class TrainingSchedulerService:
                 continue  # подсказку про старый формат плана шлём один раз, в первый час рассылки
             monday, _ = next_week_dates(local.date())
             try:
-                async with async_session_maker() as session:
-                    if await UserService.has_weekly_plan(session, plan.id, monday):
+                async with self.locks.hold(user.telegram_chat_id, "рассылка недели") as acquired:
+                    if not acquired:  # идёт команда пользователя: неделя не создана, попробуем через час
                         continue
-                if await self.send_week(user, plan, profile, today=local.date()) == WeekStatus.SENT:
-                    sent += 1
+                    async with async_session_maker() as session:
+                        if await UserService.has_weekly_plan(session, plan.id, monday):
+                            continue
+                    if await self.send_week(user, plan, profile, today=local.date()) == WeekStatus.SENT:
+                        sent += 1
             except Exception as exc:  # ошибка одного пользователя не останавливает рассылку остальным
                 logger.exception("Ошибка при генерации недели для user_id=%s: %s", user.id, exc)
 

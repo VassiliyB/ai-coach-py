@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-@router.message(Command("sync"))
+@router.message(Command("sync"), flags={"user_lock": "/sync"})
 async def handle_sync(message: Message, garmin: GarminClient) -> None:
     """Выгрузка тренировок за 90 дней и обновление паспорта атлета."""
     chat_id = message.chat.id

@@ -68,7 +68,7 @@ async def handle_distance_selected(callback: CallbackQuery, state: FSMContext) -
     await callback.answer()
 
 
-@router.message(PlanCreationStates.waiting_for_date)
+@router.message(PlanCreationStates.waiting_for_date, flags={"user_lock": "составление плана"})
 async def handle_race_date_entered(message: Message, state: FSMContext, plan_generator: PlanGenerator) -> None:
     """Валидация даты, генерация структурного макроплана, запись в БД и показ пользователю."""
     date_text = (message.text or "").strip()
@@ -153,7 +153,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
         await status_msg.edit_text("❌ Произошла ошибка при составлении плана. Попробуйте повторить запрос.")
 
 
-@router.message(Command("test_week"))
+@router.message(Command("test_week"), flags={"user_lock": "/test_week"})
 async def handle_test_week(message: Message, scheduler_service: TrainingSchedulerService) -> None:
     """Ручной запуск генерации микроцикла на неделю (отладочная команда)."""
     chat_id = message.chat.id

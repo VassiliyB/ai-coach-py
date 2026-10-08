@@ -15,16 +15,20 @@ from services.activity_polling import FETCH_LIMIT, activity_id, select_for_analy
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context, zones_for_profile
 from services.message_service import MessageService
+from services.user_locks import UserLocks
 from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
 
 
 class ActivityPoller:
-    def __init__(self, bot: Bot, garmin: GarminClient, ai_coach: AICoachService) -> None:
+    def __init__(
+        self, bot: Bot, garmin: GarminClient, ai_coach: AICoachService, locks: Optional[UserLocks] = None,
+    ) -> None:
         self.bot = bot
         self.garmin = garmin
         self.ai_coach = ai_coach
+        self.locks = locks or UserLocks()
 
     async def poll_all(self) -> None:
         """Один круг опроса всех пользователей с привязанным Garmin (последовательно)."""
@@ -36,7 +40,14 @@ class ActivityPoller:
             if not self.garmin.has_saved_tokens(user.telegram_chat_id):
                 continue
             try:
-                analyzed += await self.poll_user(user, profile)
+                async with self.locks.hold(user.telegram_chat_id, "опрос Garmin") as acquired:
+                    if not acquired:  # у пользователя идёт команда: опросим в следующий раз
+                        logger.info(
+                            "Опрос пропущен для user_id=%s: идёт %s",
+                            user.id, self.locks.current(user.telegram_chat_id),
+                        )
+                        continue
+                    analyzed += await self.poll_user(user, profile)
             except GarminRateLimitError as exc:
                 # 429 блокирует IP целиком: остальных пользователей опросим в следующий раз
                 logger.warning("Опрос Garmin прерван на user_id=%s: %s", user.id, exc)

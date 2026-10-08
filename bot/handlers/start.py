@@ -60,7 +60,7 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
         )
 
 
-@router.message(F.web_app_data)
+@router.message(F.web_app_data, flags={"user_lock": "вход в Garmin"})
 async def handle_webapp_data(message: Message, state: FSMContext, garmin: GarminClient) -> None:
     """Шаг 1: приём email и пароля из WebApp."""
     chat_id = message.chat.id
@@ -114,7 +114,10 @@ async def handle_webapp_data(message: Message, state: FSMContext, garmin: Garmin
 
 
 # Только текст и не команда: /start, /sync и т.д. не будут приняты за код
-@router.message(AuthStates.waiting_for_mfa, F.text, ~F.text.startswith("/"))
+@router.message(
+    AuthStates.waiting_for_mfa, F.text, ~F.text.startswith("/"),
+    flags={"user_lock": "вход в Garmin"},
+)
 async def handle_mfa_code_entered(message: Message, state: FSMContext, garmin: GarminClient) -> None:
     """Шаг 2: приём кода MFA из чата."""
     chat_id = message.chat.id

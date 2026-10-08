@@ -10,10 +10,12 @@ from clients.garmin import GarminClient
 from clients.llm import create_llm_client
 from config import settings
 from database import engine, run_migrations
+from bot.middlewares import UserLockMiddleware
 from services.activity_poller import ActivityPoller
 from services.ai_coach_service import AICoachService
 from services.plan_generator import PlanGenerator
 from services.scheduler_service import TrainingSchedulerService
+from services.user_locks import UserLocks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,10 +38,11 @@ async def main() -> None:
     logger.info("Провайдер LLM: %s", settings.LLM_PROVIDER)
     ai_coach = AICoachService(ai_client=ai_client)
     plan_generator = PlanGenerator(ai_client=ai_client)
-    activity_poller = ActivityPoller(bot=bot, garmin=garmin_client, ai_coach=ai_coach)
+    user_locks = UserLocks()  # одна тяжёлая операция на пользователя: команды, опрос, рассылка
+    activity_poller = ActivityPoller(bot=bot, garmin=garmin_client, ai_coach=ai_coach, locks=user_locks)
     scheduler_service = TrainingSchedulerService(
         bot=bot, plan_generator=plan_generator,
-        activity_poller=activity_poller, poll_minutes=settings.ACTIVITY_POLL_MINUTES,
+        activity_poller=activity_poller, poll_minutes=settings.ACTIVITY_POLL_MINUTES, locks=user_locks,
     )
 
     # 3. Диспетчер: именованные аргументы становятся зависимостями хендлеров (DI).
@@ -51,6 +54,10 @@ async def main() -> None:
         plan_generator=plan_generator,
         scheduler_service=scheduler_service,
     )
+
+    # Хендлеры с флагом user_lock не запускаются, пока у пользователя идёт другая тяжёлая операция.
+    # Внутренний middleware: флаги хендлера видны только после его выбора; применяется ко всем роутерам
+    dp.message.middleware(UserLockMiddleware(user_locks))
 
     # 4. Роутеры. Порядок важен: команды раньше общих хендлеров состояний.
     dp.include_router(start.router)

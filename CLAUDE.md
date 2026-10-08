@@ -38,6 +38,7 @@ services/plan_generator.py  LLM -> JSON -> схема -> правила -> по�
 services/plan_paces.py      темп, пульс и длительность дня из зон VDOT и ЧССmax
 services/plan_calendar.py   границы недель, число недель плана и номер недели (от недели забега назад)
 services/user_time.py       часовой пояс пользователя: разбор ввода, смещение по Garmin, время рассылки
+services/user_locks.py      одна тяжёлая операция на пользователя (реестр в памяти процесса)
 services/plan_storage.py    plan_details (JSONB) <-> MacroPlan / WeekPlan
 services/plan_renderer.py   сообщения Telegram (HTML) из WeekPlan и MacroPlan
 services/ai_coach_service.py текстовый разбор тренировки для /analyze (зоны считает activity_zones)
@@ -46,7 +47,7 @@ services/activity_polling.py какие новые тренировки разб
 services/activity_poller.py опрос Garmin (интервал ACTIVITY_POLL_MINUTES), автоматический разбор новых пробежек
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
 services/scheduler_service.py send_week, ежечасная проверка рассылки недель (ВС с 15:00 по поясу пользователя), опрос Garmin
-bot/                        states.py, keyboards.py, handlers/{start,sync,plan,analyze,settings}.py
+bot/                        states.py, keyboards.py, middlewares.py (UserLockMiddleware), handlers/{start,sync,plan,analyze,settings}.py
 migrations/                 Alembic (env.py берёт URL из settings)
 tests/                      pytest, без сети, БД и .env
 ```
@@ -114,6 +115,12 @@ python generate_token.py                              # вход в Garmin (сн
 - Рассылка недель: задача каждый час в :00, пользователю уходит неделя, если у него воскресенье, 15:00 или позже, и неделя ещё не создана. Если генерация упала, следующий час попробует снова; подсказка про старый формат плана уходит только в 15:00.
 - На Windows для `zoneinfo` нужен пакет `tzdata` (есть в `requirements.txt`).
 
+**Блокировки**
+- У пользователя одновременно идёт не больше одной тяжёлой операции (Garmin, ИИ). Хендлеры помечаются флагом `flags={"user_lock": "<название>"}`; `UserLockMiddleware` (внутренний, на `dp.message`) при занятом пользователе отвечает «подождите» и хендлер не запускает. Сейчас флаг у `/sync`, `/analyze`, `/test_week`, ввода даты в `/plan`, входа в Garmin и кода MFA. Лёгкие команды (`/timezone`, `/start`, `/plan` до ввода даты) без флага.
+- Фоновые задачи берут ту же блокировку через `UserLocks.hold` и пропускают занятого пользователя: опрос до следующего круга, рассылка до следующего часа. Никто никого не ждёт.
+- `send_week` блокировку не берёт: её держит вызывающий (middleware для `/test_week`, рассылка для себя).
+- Реестр в памяти процесса: при запуске нескольких процессов бота блокировки нужно перенести в БД (advisory locks) или Redis.
+
 **Telegram**
 - Только поддерживаемые теги: `b`, `i`, `u`, `s`, `code`, `pre`, `blockquote`, `a`. Любой текст от модели экранировать (`html.escape`).
 - Длинные сообщения резать через `MessageService.chunk_message`.
@@ -137,12 +144,11 @@ python generate_token.py                              # вход в Garmin (сн
 - Этап 2: модели, репозитории, Alembic.
 - Этап 3: `coach_service` (VDOT и зоны), поля профиля, тесты.
 - Этап 4: схемы, валидатор, генератор, темпы, пульс и длительность кодом, рендер; `plan_details` в JSONB; `/plan`, `/test_week` и воскресная рассылка на структурных планах; клиент Claude и выбор провайдера.
-- Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI; поллинг активностей с автоматическим разбором новых пробежек; часовые пояса пользователей (`/timezone`, определение по Garmin, рассылка по местному времени).
+- Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI; поллинг активностей с автоматическим разбором новых пробежек; часовые пояса пользователей (`/timezone`, определение по Garmin, рассылка по местному времени); блокировки тяжёлых операций на пользователя.
 
 Проверено скриптами на живой модели и локальной БД (запись с откатом): генерация макроплана и недели, сохранение и чтение JSONB, `send_week` для нового, старого и завершённого плана. Живая проверка в Telegram (`/sync`, `/plan`, `/test_week`) ещё не подтверждена.
 
 Дальше:
-- Этап 5: блокировки.
 - Этап 6: ruff, CI, Docker, `/delete_me`, `requirements-dev.txt` для pytest.
 
 ## Известные ограничения
