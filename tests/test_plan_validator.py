@@ -175,5 +175,74 @@ def test_macro_return_after_step_back_is_ok():
     assert not has(validate_macro(macro, total_weeks=12), "неделя 8")
 
 
+def test_macro_taper_too_small():
+    data = macro_data()
+    data["weekly_km"][-1] = 40               # пик 46, допустимо не более 34.5
+    macro = MacroPlan.model_validate(data)
+    assert has(validate_macro(macro, total_weeks=12), "последняя неделя")
+
+
+def test_macro_taper_on_boundary_is_ok():
+    data = macro_data()
+    data["weekly_km"][-1] = 34.5             # ровно 75% от пика 46
+    macro = MacroPlan.model_validate(data)
+    assert validate_macro(macro, total_weeks=12) == []
+
+
+# ---------- длительный бег и правила фазы ----------
+
+def base_week():
+    # 5 + 6 + 5 + 9 + 5 = 30 км, только лёгкий бег и длительный: подходит для фазы I
+    return week([
+        day(1, "rest"),
+        day(2, "easy", 5, description="Лёгкий бег + 4 ускорения по 20 с"),
+        day(3, "easy", 6),
+        day(4, "cross"),
+        day(5, "easy", 5),
+        day(6, "long", 9),
+        day(7, "easy", 5),
+    ])
+
+
+def test_long_run_shorter_than_other_day():
+    w = week([
+        day(1, "rest"),
+        day(2, "easy", 8),
+        day(3, "easy", 5),
+        day(4, "easy", 6),
+        day(5, "rest"),
+        day(6, "long", 7),
+        day(7, "easy", 5),
+    ])
+    assert has(validate_week(w), "длительный бег 7 км короче")
+
+
+def test_long_run_equal_to_other_day_is_ok():
+    w = week([
+        day(1, "rest"),
+        day(2, "threshold", 8, quality=3),
+        day(3, "easy", 5),
+        day(4, "easy", 6),
+        day(5, "rest"),
+        day(6, "long", 8),
+        day(7, "easy", 5),
+    ])
+    assert not has(validate_week(w), "короче")
+
+
+def test_phase_one_forbids_quality():
+    problems = validate_week(good_week(), phase_number=1)
+    assert has(problems, "недопустима в фазе 1")
+
+
+def test_phase_one_allows_easy_long_cross():
+    assert validate_week(base_week(), phase_number=1) == []
+
+
+def test_quality_allowed_in_later_phases_and_without_phase():
+    assert validate_week(good_week(), phase_number=2) == []
+    assert validate_week(good_week()) == []
+
+
 def test_format_problems():
     assert format_problems(["а", "б"]) == "- а\n- б"

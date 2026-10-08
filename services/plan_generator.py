@@ -94,6 +94,18 @@ def _load_knowledge() -> str:
         return ""
 
 
+def _phase_rule(phase_number: int) -> str:
+    """Пункт промпта о запрещённых в фазе типах (пустая строка, если запретов нет)."""
+    forbidden = rules.PHASE_FORBIDDEN_TYPES.get(phase_number)
+    if not forbidden:
+        return ""
+    types = ", ".join(sorted(t.value for t in forbidden))
+    return (
+        f"\n9. В фазе {phase_number} запрещены тренировки типов: {types}. "
+        "Используй только rest, easy, long, cross; ускорения по 15-20 с можно добавить в description лёгкого бега."
+    )
+
+
 def _limit_line(workout_type: WorkoutType) -> str:
     share, cap = rules.QUALITY_LIMITS[workout_type]
     return f"  • {workout_type.value}: quality_km не более {share:.0%} недельного километража и не более {cap:g} км"
@@ -179,7 +191,8 @@ class PlanGenerator:
             f"3. Первая неделя близка к текущему объёму атлета. Рост километража не более "
             f"{rules.MAX_WEEKLY_GROWTH:.0%} относительно лучшей из двух предыдущих недель; "
             "каждая 3-я или 4-я неделя разгрузочная (на 20-25% меньше).\n"
-            "4. Фаза IV — подводка: километраж снижается к старту.\n"
+            f"4. Фаза IV — подводка: километраж снижается к старту; последняя неделя не более "
+            f"{rules.TAPER_MAX_SHARE:.0%} от пиковой.\n"
             "5. focus — 1-2 коротких предложения о задачах фазы; notes — до 5 коротких правил предосторожности."
         )
 
@@ -214,11 +227,12 @@ class PlanGenerator:
             f"{_limit_line(WorkoutType.INTERVAL)}\n"
             f"{_limit_line(WorkoutType.REPETITION)}\n"
             f"5. Длительный бег (long): не более {rules.LONG_MAX_SHARE:.0%} недельного километража "
-            f"и не более {rules.LONG_MAX_MINUTES} минут.\n"
+            f"и не более {rules.LONG_MAX_MINUTES} минут; он не короче любой другой тренировки недели.\n"
             f"6. Не более {rules.MAX_QUALITY_SESSIONS} качественных тренировок; минимум {rules.MIN_REST_DAYS} день "
             "отдыха (rest) или ОФП (cross).\n"
             "7. Две тяжёлые тренировки подряд (качественная или long) недопустимы: после них лёгкий день или отдых.\n"
             "8. description — структура тренировки (например, '5 × 1 км, отдых 2 мин трусцой'), без темпов."
+            f"{_phase_rule(phase.number)}"
         )
 
     # ---------------- Общий цикл с повторными попытками ----------------
@@ -287,6 +301,7 @@ class PlanGenerator:
         week_end: str,
     ) -> WeekPlan:
         target = target_km_for_week(macro, week_number)
+        phase_number = macro.phase_for_week(week_number).number
         messages = [
             {"role": "system", "content": self._system_prompt},
             {
@@ -295,5 +310,7 @@ class PlanGenerator:
             },
         ]
         return await self._generate(
-            messages, WeekPlan, lambda w: validate_week(w, target_km=target), temperature=0.4, what="недельный план",
+            messages, WeekPlan,
+            lambda w: validate_week(w, target_km=target, phase_number=phase_number),
+            temperature=0.4, what="недельный план",
         )

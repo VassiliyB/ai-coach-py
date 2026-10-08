@@ -3,7 +3,7 @@
 
 Каждая функция возвращает список замечаний (пустой список = план корректен).
 """
-from typing import List, Optional
+from typing import Dict, FrozenSet, List, Optional
 
 from schemas.plan import QUALITY_TYPES, MacroPlan, WeekPlan, WorkoutType
 
@@ -24,11 +24,23 @@ MAX_QUALITY_SESSIONS = 3
 MIN_REST_DAYS = 1                 # отдых или ОФП
 TARGET_KM_TOLERANCE = 0.15        # допустимое отклонение от целевого километража недели
 MAX_WEEKLY_GROWTH = 0.10          # рост относительно лучшей из двух предыдущих недель
+TAPER_MAX_SHARE = 0.75            # последняя неделя макроплана не больше этой доли от пиковой
 KM_EPS = 0.05
 
+# Типы тренировок, запрещённые в фазе. Фаза I (закладка фундамента) по Дэниелсу: только лёгкий бег,
+# длительный и ускорения; ускорения описываются внутри easy, качественных тренировок нет.
+PHASE_FORBIDDEN_TYPES: Dict[int, FrozenSet[WorkoutType]] = {
+    1: QUALITY_TYPES,
+}
 
-def validate_week(week: WeekPlan, target_km: Optional[float] = None) -> List[str]:
-    """Проверяет недельный микроцикл. target_km: плановый километраж недели из макроплана."""
+
+def validate_week(
+    week: WeekPlan, target_km: Optional[float] = None, phase_number: Optional[int] = None,
+) -> List[str]:
+    """Проверяет недельный микроцикл.
+
+    target_km: плановый километраж недели из макроплана; phase_number: номер фазы (1-4) для правил фазы.
+    """
     problems: List[str] = []
     total = week.total_km
     if total <= 0:
@@ -67,6 +79,14 @@ def validate_week(week: WeekPlan, target_km: Optional[float] = None) -> List[str
             problems.append(
                 f"{DAY_NAMES[d.day - 1]}: длительный бег {d.duration_min} мин дольше потолка {LONG_MAX_MINUTES} мин"
             )
+        longer = [o for o in week.days if o.type != WorkoutType.LONG and (o.distance_km or 0) > d.distance_km + KM_EPS]
+        if longer:
+            other = max(longer, key=lambda o: o.distance_km)
+            problems.append(
+                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км короче тренировки "
+                f"{DAY_NAMES[other.day - 1]} ({other.type.value}, {other.distance_km:g} км); "
+                "длительный должен быть самой длинной пробежкой недели"
+            )
 
     # 4. Количество качественных тренировок и дни отдыха
     quality_count = sum(1 for d in week.days if d.type in QUALITY_TYPES)
@@ -78,7 +98,16 @@ def validate_week(week: WeekPlan, target_km: Optional[float] = None) -> List[str
     if rest_days < MIN_REST_DAYS:
         problems.append("нет ни одного дня отдыха или ОФП")
 
-    # 5. Соответствие целевому километражу недели
+    # 5. Типы тренировок, запрещённые в текущей фазе
+    forbidden = PHASE_FORBIDDEN_TYPES.get(phase_number, frozenset())
+    for d in week.days:
+        if d.type in forbidden:
+            problems.append(
+                f"{DAY_NAMES[d.day - 1]}: тренировка '{d.type.value}' недопустима в фазе {phase_number}; "
+                f"запрещены: {_type_list(forbidden)}"
+            )
+
+    # 6. Соответствие целевому километражу недели
     if target_km:
         if abs(total - target_km) > TARGET_KM_TOLERANCE * target_km:
             problems.append(
@@ -108,7 +137,18 @@ def validate_macro(macro: MacroPlan, total_weeks: int) -> List[str]:
                 f"относительно предыдущих недель (максимум {limit:.1f} км)"
             )
 
+    peak = max(km)
+    if len(km) >= 2 and km[-1] > TAPER_MAX_SHARE * peak + KM_EPS:
+        problems.append(
+            f"последняя неделя {km[-1]:g} км: перед стартом объём должен снижаться до "
+            f"{TAPER_MAX_SHARE:.0%} от пика ({peak:g} км) или ниже, то есть не более {TAPER_MAX_SHARE * peak:.1f} км"
+        )
+
     return problems
+
+
+def _type_list(types: FrozenSet[WorkoutType]) -> str:
+    return ", ".join(sorted(t.value for t in types))
 
 
 def format_problems(problems: List[str]) -> str:

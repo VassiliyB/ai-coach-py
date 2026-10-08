@@ -142,3 +142,41 @@ def test_week_retry_on_schema_error():
     week = asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027"))
     assert len(week.days) == 7
     assert len(ai.calls) == 2
+
+
+def base_week_data():
+    # 30 км без качественных тренировок: подходит для 1-й недели (фаза I, план 30 км)
+    return {
+        "days": [
+            {"day": 1, "type": "rest"},
+            {"day": 2, "type": "easy", "distance_km": 5},
+            {"day": 3, "type": "easy", "distance_km": 6},
+            {"day": 4, "type": "cross"},
+            {"day": 5, "type": "easy", "distance_km": 5},
+            {"day": 6, "type": "long", "distance_km": 9},
+            {"day": 7, "type": "easy", "distance_km": 5},
+        ]
+    }
+
+
+def test_week_in_phase_one_rejects_quality_and_retries():
+    macro = MacroPlan.model_validate(macro_data())
+    gen, ai = generator([dumps(good_week_data()), dumps(base_week_data())])
+    week = asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 1, "01.03.2027", "07.03.2027"))
+    assert week.total_km == 30.0
+    assert len(ai.calls) == 2
+    assert "запрещены тренировки типов" in ai.calls[0]["messages"][-1]["content"]
+    assert "недопустима в фазе 1" in ai.calls[1]["messages"][-1]["content"]
+
+
+def test_phase_rule_only_in_phase_one_prompt():
+    macro = MacroPlan.model_validate(macro_data())
+    gen, ai = generator([dumps(good_week_data())])
+    asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027"))
+    assert "запрещены тренировки типов" not in ai.calls[0]["messages"][-1]["content"]
+
+
+def test_macro_prompt_mentions_taper_limit():
+    gen, ai = generator([dumps(macro_data())])
+    asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert "75% от пиковой" in ai.calls[0]["messages"][-1]["content"]
