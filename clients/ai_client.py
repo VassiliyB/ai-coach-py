@@ -1,103 +1,84 @@
 # clients/ai_client.py
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AsyncOpenAI,
-    RateLimitError,
-)
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
+from pydantic import SecretStr
 
 from config import settings
 
 logger = logging.getLogger(__name__)
 
-Message = Dict[str, str]
-
 
 class AIClientError(Exception):
-    """Ошибка вызова ИИ. Текст безопасен для показа пользователю."""
+    """Базовое исключение для ошибок вызова AI."""
+    pass
 
 
 class AIClient:
-    """Асинхронный клиент Groq Cloud (OpenAI-совместимый API)."""
+    """Асинхронный клиент для взаимодействия с Groq Cloud LLM API."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         default_model: Optional[str] = None,
-        timeout: float = 90.0,
-        max_retries: int = 2,
     ) -> None:
+        raw_key = api_key or settings.GROQ_API_KEY
+        # В конфиге ключ хранится как SecretStr: для запроса нужна обычная строка
+        self.api_key = raw_key.get_secret_value() if isinstance(raw_key, SecretStr) else raw_key
         self.default_model = default_model or settings.GROQ_MODEL
         self.client = AsyncOpenAI(
-            api_key=api_key or settings.GROQ_API_KEY.get_secret_value(),
+            api_key=self.api_key,
             base_url=base_url or settings.GROQ_BASE_URL,
-            timeout=timeout,          # без этого запрос может висеть до 10 минут
-            max_retries=max_retries,  # SDK сам повторяет при 429/5xx/сетевых сбоях
         )
 
     async def generate_response(
         self,
-        messages: List[Message],
+        messages: List[Dict[str, str]],
         model: Optional[str] = None,
         temperature: float = 0.4,
-        max_tokens: int = 6000,
-        reasoning_effort: Optional[str] = None,
+        max_tokens: int = 3000,
+        json_mode: bool = False,
     ) -> str:
-        """Отправляет диалог в LLM и возвращает текст ответа."""
-        target_model = model or self.default_model
+        """Отправляет контекст диалога в LLM и возвращает сгенерированный текст.
 
-        extra_body = {"reasoning_effort": reasoning_effort} if reasoning_effort else None
+        json_mode=True включает режим JSON-объекта (в промпте должно встречаться слово JSON).
+        В этом режиме обрезанный по длине ответ считается ошибкой: оборванный JSON бесполезен.
+        """
+        target_model = model or self.default_model
+        kwargs: Dict[str, Any] = {}
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
 
         try:
             logger.debug(
-                "Запрос к Groq: model=%s, messages=%d, max_tokens=%d",
-                target_model, len(messages), max_tokens,
+                "Отправка запроса в Groq (модель: %s, сообщений: %d, json: %s)",
+                target_model, len(messages), json_mode,
             )
+            # noinspection PyTypeChecker
             response = await self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,  # type: ignore[arg-type]
+                messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                extra_body=extra_body,
+                **kwargs,
             )
+            choice = response.choices[0]
+            if json_mode and choice.finish_reason == "length":
+                raise AIClientError("Ответ ИИ оказался обрезан по длине. Попробуйте ещё раз.")
+            return choice.message.content or ""
+        except AIClientError:
+            raise
         except RateLimitError as exc:
-            logger.error("Лимит запросов Groq (TPM/RPM): %s", exc)
-            raise AIClientError("Сервер ИИ перегружен. Подождите минуту и повторите.") from exc
-        except APITimeoutError as exc:
-            logger.error("Таймаут запроса к Groq: %s", exc)
-            raise AIClientError("ИИ слишком долго отвечает. Попробуйте ещё раз.") from exc
+            logger.error("Превышен лимит запросов к Groq (TPM/RPM): %s", exc)
+            raise AIClientError("Сервер перегружен запросами. Пожалуйста, подождите минуту.") from exc
         except APIConnectionError as exc:
-            logger.error("Сетевая ошибка Groq: %s", exc)
-            raise AIClientError("Не удалось связаться с сервером ИИ.") from exc
+            logger.error("Сетевая ошибка при обращении к Groq API: %s", exc)
+            raise AIClientError("Не удалось связаться с сервером ИИ. Проверьте сеть.") from exc
         except APIStatusError as exc:
-            logger.error("Groq API HTTP %s: %s", exc.status_code, exc.message)
-            raise AIClientError("Сервис ИИ вернул ошибку. Попробуйте позже.") from exc
+            logger.error("Ошибка Groq API HTTP %s: %s", exc.status_code, exc.message)
+            raise AIClientError(f"Ошибка ИИ-сервиса: {exc.message}") from exc
         except Exception as exc:
-            logger.exception("Непредвиденная ошибка при запросе к ИИ")
-            raise AIClientError("Непредвиденная ошибка при генерации ответа.") from exc
-
-        if not response.choices:
-            logger.error("Groq вернул пустой список choices")
-            raise AIClientError("ИИ вернул пустой ответ. Попробуйте ещё раз.")
-
-        choice = response.choices[0]
-        content = (choice.message.content or "").strip()
-
-        if choice.finish_reason == "length":
-            logger.warning(
-                "Ответ обрезан по max_tokens=%d, usage=%s", max_tokens, response.usage
-            )
-            if not content:
-                # Модель потратила весь лимит на рассуждения
-                raise AIClientError("ИИ не уложился в лимит ответа. Попробуйте ещё раз.")
-
-        if not content:
-            logger.error("Пустой content, finish_reason=%s", choice.finish_reason)
-            raise AIClientError("ИИ вернул пустой ответ. Попробуйте ещё раз.")
-
-        return content
+            logger.exception("Непредвиденная ошибка при запросе к AI: %s", exc)
+            raise AIClientError("Произошла непредвиденная ошибка при генерации ответа.") from exc

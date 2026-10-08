@@ -1,0 +1,144 @@
+import asyncio
+import json
+
+import pytest
+
+from schemas.plan import MacroPlan
+from services.plan_generator import (
+    MAX_ATTEMPTS,
+    PlanGenerationError,
+    PlanGenerator,
+    parse_json_object,
+)
+
+
+class FakeAI:
+    """Подставной клиент LLM: отдаёт заранее заданные ответы и запоминает вызовы."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    async def generate_response(self, messages, model=None, temperature=0.4, max_tokens=3000, json_mode=False):
+        self.calls.append({"messages": messages, "json_mode": json_mode})
+        return self.responses.pop(0)
+
+
+def macro_data():
+    return {
+        "phases": [
+            {"number": 1, "name": "Фундамент", "weeks": 3},
+            {"number": 2, "name": "Раннее качество", "weeks": 4},
+            {"number": 3, "name": "Пиковое качество", "weeks": 4},
+            {"number": 4, "name": "Подводка", "weeks": 1},
+        ],
+        "weekly_km": [30, 32, 34, 36, 38, 40, 32, 42, 44, 46, 36, 25],
+    }
+
+
+def good_week_data():
+    return {
+        "days": [
+            {"day": 1, "type": "rest"},
+            {"day": 2, "type": "threshold", "distance_km": 8, "quality_km": 3},
+            {"day": 3, "type": "easy", "distance_km": 5},
+            {"day": 4, "type": "easy", "distance_km": 6},
+            {"day": 5, "type": "rest"},
+            {"day": 6, "type": "long", "distance_km": 10},
+            {"day": 7, "type": "easy", "distance_km": 7},
+        ]
+    }
+
+
+def dumps(data):
+    return json.dumps(data, ensure_ascii=False)
+
+
+def generator(responses):
+    ai = FakeAI(responses)
+    return PlanGenerator(ai_client=ai, knowledge_base=""), ai
+
+
+PROFILE = {"summary_text": "Средненедельный объем: 30 км/нед"}
+
+
+# ---------- parse_json_object ----------
+
+def test_parse_json_with_code_fence():
+    raw = 'Вот план:\n```json\n{"a": 1}\n```'
+    assert parse_json_object(raw) == {"a": 1}
+
+
+def test_parse_json_without_object_raises():
+    with pytest.raises(ValueError):
+        parse_json_object("просто текст")
+
+
+# ---------- generate_macro ----------
+
+def test_macro_first_try():
+    gen, ai = generator([dumps(macro_data())])
+    macro = asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert isinstance(macro, MacroPlan)
+    assert len(ai.calls) == 1
+    assert ai.calls[0]["json_mode"] is True
+
+
+def test_macro_retry_on_validator_problems():
+    bad = macro_data()
+    bad["weekly_km"][3] = 50                       # слишком быстрый рост
+    gen, ai = generator([dumps(bad), dumps(macro_data())])
+    macro = asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert macro.total_weeks == 12
+    assert len(ai.calls) == 2
+    assert len(ai.calls[0]["messages"]) == 2       # исходный список не мутируется
+    retry_messages = ai.calls[1]["messages"]
+    assert retry_messages[-2]["role"] == "assistant"
+    assert "неделя 4" in retry_messages[-1]["content"]
+
+
+def test_macro_gives_up_after_max_attempts():
+    bad = macro_data()
+    bad["weekly_km"][3] = 50
+    gen, ai = generator([dumps(bad)] * MAX_ATTEMPTS)
+    with pytest.raises(PlanGenerationError) as exc_info:
+        asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert len(ai.calls) == MAX_ATTEMPTS
+    assert exc_info.value.problems
+
+
+def test_retry_on_invalid_json():
+    gen, ai = generator(["это не JSON", dumps(macro_data())])
+    macro = asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert macro.total_weeks == 12
+    assert "JSON" in ai.calls[1]["messages"][-1]["content"]
+
+
+def test_macro_total_weeks_mismatch_triggers_retry():
+    # просим 10 недель, а модель каждый раз отвечает планом на 12
+    gen, ai = generator([dumps(macro_data())] * MAX_ATTEMPTS)
+    with pytest.raises(PlanGenerationError) as exc_info:
+        asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 10))
+    assert any("недель" in p for p in exc_info.value.problems)
+
+
+# ---------- generate_week ----------
+
+def test_week_generation_uses_target_and_phase():
+    macro = MacroPlan.model_validate(macro_data())
+    gen, ai = generator([dumps(good_week_data())])
+    week = asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027"))
+    assert week.total_km == 36.0
+    prompt = ai.calls[0]["messages"][-1]["content"]
+    assert "38" in prompt                          # плановый километраж 5-й недели
+    assert "Фаза 2" in prompt                      # 5-я неделя попадает во вторую фазу
+
+
+def test_week_retry_on_schema_error():
+    broken = good_week_data()
+    broken["days"] = broken["days"][:6]            # только 6 дней
+    macro = MacroPlan.model_validate(macro_data())
+    gen, ai = generator([dumps(broken), dumps(good_week_data())])
+    week = asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027"))
+    assert len(week.days) == 7
+    assert len(ai.calls) == 2
