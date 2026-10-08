@@ -18,7 +18,7 @@ __pycache__/
 # === Токены авторизации Garmin Connect ===
 .garmin_tokens/
 *.json
-
+reset_db.py
 # === Базы данных (если будет локальный SQLite для тестов) ===
 *.sqlite3
 *.db

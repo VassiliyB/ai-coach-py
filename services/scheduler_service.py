@@ -1,3 +1,4 @@
+# services/scheduler_service.py
 import logging
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -7,12 +8,13 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from database import async_session_maker
-from services.user_service import UserService
-from services.ai_coach_service import AICoachService
-from services.message_service import MessageService
-from models.user import AppUser
-from models.training_plan import TrainingPlan
 from models.athlete_profile import AthleteProfile
+from models.training_plan import TrainingPlan
+from models.user import AppUser
+from services.ai_coach_service import AICoachService
+from services.coach_service import build_profile_context
+from services.message_service import MessageService
+from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +30,12 @@ class TrainingSchedulerService:
     @staticmethod
     def get_next_week_dates(base_date: Optional[date] = None) -> tuple[date, date, int]:
         """
-        Вычисляет границы следующей недели (Понедельник — Воскресенье).
+        Границы следующей недели (Понедельник — Воскресенье).
         Возвращает: (дата_понедельника, дата_воскресенья, номер_недели_в_году).
         """
         today = base_date or datetime.now().date()
         # Дней до следующего понедельника (если сегодня ВС (6), то +1 день)
         days_ahead = 7 - today.weekday()
-        if days_ahead == 0:
-            days_ahead = 7
-
         next_monday = today + timedelta(days=days_ahead)
         next_sunday = next_monday + timedelta(days=6)
         week_number = next_monday.isocalendar()[1]
@@ -50,23 +49,23 @@ class TrainingSchedulerService:
         target_monday: Optional[date] = None,
         target_sunday: Optional[date] = None,
     ) -> bool:
-        """Генерирует недельный микроцикл для конкретного пользователя и отправляет в Telegram."""
+        """Генерирует недельный микроцикл для пользователя и отправляет в Telegram."""
         if not target_monday or not target_sunday:
             target_monday, target_sunday, _ = self.get_next_week_dates()
 
-        # Вычисляем порядковый номер недели относительно старта плана
+        # Порядковый номер недели относительно старта плана
         plan_created = plan.created_at.date() if isinstance(plan.created_at, datetime) else plan.created_at
         weeks_elapsed = max(1, ((target_monday - plan_created).days // 7) + 1)
 
-        profile_dict = {"summary_text": profile.raw_summary_text} if profile else {}
+        profile_dict = build_profile_context(profile)  # текст паспорта + готовые зоны темпа
 
         logger.info(
-            "Генерация микроцикла для user_id=%s (chat_id=%s), Неделя #%d (%s - %s)",
-            user.id, user.telegram_chat_id, weeks_elapsed, target_monday, target_sunday
+            "Генерация микроцикла для user_id=%s (chat_id=%s), неделя #%d (%s - %s)",
+            user.id, user.telegram_chat_id, weeks_elapsed, target_monday, target_sunday,
         )
 
         try:
-            # 1. Генерация расписания по правилу 80/20 через спортивный ИИ
+            # 1. Генерация расписания по правилу 80/20
             weekly_text = await self.ai_coach.generate_weekly_microcycle(
                 athlete_profile=profile_dict,
                 target_race=plan.target_race,
@@ -77,7 +76,7 @@ class TrainingSchedulerService:
                 total_weeks=plan.total_weeks,
             )
 
-            # 2. Сохранение в БД
+            # 2. Сохранение в БД (повторная генерация той же недели перезаписывает запись)
             async with async_session_maker() as session:
                 await UserService.save_weekly_plan(
                     session=session,
@@ -92,11 +91,10 @@ class TrainingSchedulerService:
             header = (
                 f"📋 <b>Расписание тренировок на неделю (Пн–Вс):</b>\n"
                 f"Период: <code>{target_monday.strftime('%d.%m')} — {target_sunday.strftime('%d.%m.%Y')}</code>\n"
-                f"Цель: <b>{plan.target_race}</b> | Неделя подготовки: <b>#{weeks_elapsed}</b>\n\n"
+                f"Цель: <b>{plan.target_race}</b> | Неделя подготовки: <b>#{weeks_elapsed}</b> из {plan.total_weeks}\n\n"
             )
 
-            chunks = MessageService.chunk_message(header + weekly_text)
-            for chunk in chunks:
+            for chunk in MessageService.chunk_message(header + weekly_text):
                 await self.bot.send_message(
                     chat_id=user.telegram_chat_id,
                     text=chunk,
@@ -121,8 +119,7 @@ class TrainingSchedulerService:
 
         success_count = 0
         for user, plan, profile in active_plans:
-            success = await self.generate_and_send_microcycle_for_user(user, plan, profile)
-            if success:
+            if await self.generate_and_send_microcycle_for_user(user, plan, profile):
                 success_count += 1
 
         logger.info("Воскресная рассылка завершена. Успешно отправлено: %d из %d", success_count, len(active_plans))
@@ -137,7 +134,7 @@ class TrainingSchedulerService:
             replace_existing=True,
         )
         self.scheduler.start()
-        logger.info("Фоновый планировщик успешно запущен (воскресный микроцикл настроен на ВС 15:00).")
+        logger.info("Фоновый планировщик запущен (воскресный микроцикл: ВС 15:00).")
 
     def shutdown(self) -> None:
         """Остановка планировщика при завершении программы."""

@@ -1,9 +1,13 @@
 from datetime import date, datetime
 from typing import TYPE_CHECKING
-from sqlalchemy import BigInteger, Date, DateTime, ForeignKey, Text
+
+from sqlalchemy import (
+    BigInteger, CheckConstraint, Date, DateTime, ForeignKey,
+    Index, Text, UniqueConstraint, func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from models.base import Base
+from models.base import Base, utcnow
 
 if TYPE_CHECKING:
     from models.training_plan import TrainingPlan
@@ -11,6 +15,11 @@ if TYPE_CHECKING:
 
 class WeeklyPlan(Base):
     __tablename__ = "weekly_plans"
+    __table_args__ = (
+        UniqueConstraint("training_plan_id", "week_start_date", name="uq_weekly_plans_plan_week"),
+        Index("ix_weekly_plans_user_week", "user_id", "week_start_date"),
+        CheckConstraint("week_end_date >= week_start_date", name="week_range_valid"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False)
@@ -19,6 +28,10 @@ class WeeklyPlan(Base):
     week_start_date: Mapped[date] = mapped_column(Date, nullable=False)
     week_end_date: Mapped[date] = mapped_column(Date, nullable=False)
     plan_details: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
+    )
 
-    training_plan: Mapped["TrainingPlan"] = relationship("TrainingPlan", back_populates="weekly_plans")
+    training_plan: Mapped["TrainingPlan"] = relationship(
+        "TrainingPlan", back_populates="weekly_plans", lazy="raise"
+    )

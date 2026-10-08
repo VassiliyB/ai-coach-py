@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional
 
+from services.coach_service import MAX_VDOT, MIN_VDOT, calculate_vdot
+
 
 def format_pace(pace_sec_per_km: float) -> str:
     """Форматирует темп в секундах на км в строку 'М:СС /км'."""
@@ -35,30 +37,29 @@ def parse_last_activity(raw_activity: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def find_best_effort(activities: List[Dict[str, Any]]) -> str:
-    """Определяет лучший быстрый забег для расчета VDOT."""
-    best_run = None
-    min_pace = float("inf")
+def find_best_effort(activities: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Лучшая пробежка (от 3 км) по расчётному VDOT.
 
+    Возвращает {"distance_m", "time_s", "vdot"} или None, если подходящих пробежек нет.
+    """
+    best: Optional[Dict[str, Any]] = None
     for act in activities:
-        dist_km = act.get("distance", 0.0) / 1000.0
-        dur_s = act.get("duration", 0.0)
-        if dist_km >= 4.5 and dur_s > 0:
-            pace = dur_s / dist_km
-            if pace < min_pace:
-                min_pace = pace
-                best_run = (dist_km, dur_s, pace)
-
-    if best_run:
-        dist, dur, pace = best_run
-        return f"{dist:.1f} км за {int(dur // 60)}:{int(dur % 60):02d} (темп {format_pace(pace)})"
-    return "Недостаточно данных для контрольной дистанции (>= 5 км)"
+        dist = act.get("distance") or 0.0
+        dur = act.get("duration") or 0.0
+        if dist < 3000 or dur <= 0:
+            continue
+        vdot = calculate_vdot(dist, dur)
+        if not (MIN_VDOT <= vdot <= MAX_VDOT):
+            continue  # отсеиваем артефакты GPS и паузы
+        if best is None or vdot > best["vdot"]:
+            best = {"distance_m": dist, "time_s": dur, "vdot": vdot}
+    return best
 
 
 def aggregate_profile_90d(
     activities: List[Dict[str, Any]],
     vo2_max: Optional[float],
-    days: int = 90
+    days: int = 90,
 ) -> Dict[str, Any]:
     """Формирует спортивный паспорт бегуна за указанный период."""
     if not activities:
@@ -69,6 +70,10 @@ def aggregate_profile_90d(
             "typical_easy_hr": None,
             "max_hr": None,
             "vo2_max": vo2_max,
+            "best_effort": None,
+            "vdot": None,
+            "best_effort_distance_m": None,
+            "best_effort_time_s": None,
             "summary_text": f"За последние {days} дней беговых тренировок не обнаружено.",
         }
 
@@ -87,7 +92,17 @@ def aggregate_profile_90d(
         and (a.get("aerobicTrainingEffect") or 0) <= 3.2
     ]
     typical_easy_hr = int(sum(easy_hrs) / len(easy_hrs)) if easy_hrs else None
-    best_effort = find_best_effort(activities)
+
+    best = find_best_effort(activities)
+    if best:
+        dist_km = best["distance_m"] / 1000.0
+        time_s = best["time_s"]
+        best_text = (
+            f"{dist_km:.1f} км за {int(time_s // 60)}:{int(time_s % 60):02d} "
+            f"(темп {format_pace(time_s / dist_km)}), VDOT ≈ {best['vdot']:.1f}"
+        )
+    else:
+        best_text = "Недостаточно данных (нужна пробежка от 3 км)"
 
     summary_text = (
         f"Спортивный паспорт за {days} дней:\n"
@@ -97,7 +112,7 @@ def aggregate_profile_90d(
         f"- VO2 Max: {vo2_max or 'н/д'}\n"
         f"- Пиковый ЧСС: {peak_hr or 'н/д'} уд/мин\n"
         f"- Базовый пульс легкого бега: ~{typical_easy_hr or 'н/д'} уд/мин\n"
-        f"- Контрольный забег: {best_effort}"
+        f"- Контрольный забег: {best_text}"
     )
 
     return {
@@ -107,6 +122,9 @@ def aggregate_profile_90d(
         "typical_easy_hr": typical_easy_hr,
         "max_hr": peak_hr,
         "vo2_max": vo2_max,
-        "best_effort": best_effort,
+        "best_effort": best_text,
+        "vdot": round(best["vdot"], 1) if best else None,
+        "best_effort_distance_m": best["distance_m"] if best else None,
+        "best_effort_time_s": best["time_s"] if best else None,
         "summary_text": summary_text,
     }

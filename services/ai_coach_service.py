@@ -1,7 +1,7 @@
 # services/ai_coach_service.py
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from clients.ai_client import AIClient
 from config import settings
@@ -9,16 +9,22 @@ from services.message_service import MessageService
 
 logger = logging.getLogger(__name__)
 
-# Сколько символов макроплана передавать в промпт недели (раньше было 1500 и терялись поздние фазы)
+# Сколько символов макроплана передавать в промпт недели
 MACRO_CONTEXT_CHARS = 6000
 NO_DATA = "Нет данных"
+NO_ZONES = "Зоны темпа не рассчитаны (нет VDOT: атлету нужно выполнить /sync)."
+
+ZONES_RULE = (
+    "Используй ТОЛЬКО зоны темпа из блока «РАССЧИТАННЫЕ ЗОНЫ ТЕМПА» выше: они посчитаны кодом по формулам "
+    "Дэниелса. Не пересчитывай их и не придумывай другие темпы."
+)
 
 
 def _clean(value: Any, max_len: int = 200) -> str:
     """Приводит внешнее значение (например, название тренировки из Garmin) к безопасной строке."""
     if value is None:
         return "н/д"
-    text = " ".join(str(value).split())          # убираем переводы строк и лишние пробелы
+    text = " ".join(str(value).split())  # убираем переводы строк и лишние пробелы
     text = text.replace("<", " ").replace(">", " ")
     return text[:max_len] or "н/д"
 
@@ -66,6 +72,7 @@ class AICoachService:
             "Не используй Markdown (**, ##, `).\n"
             "- НЕ используй теги <p>, <div>, <h1>-<h6>, <br>, <ul>, <li>. Списки делай через символ '•' или '-'.\n"
             "- Указывай конкретный целевой темп (М:СС /км) и границы пульса для тренировок.\n"
+            "- Темпы бери только из блока «РАССЧИТАННЫЕ ЗОНЫ ТЕМПА», если он есть. Сам темпы не вычисляй.\n"
             "- Если данных недостаточно, прямо скажи об этом, а не выдумывай цифры.\n"
             "- При упоминании боли, травмы или плохого самочувствия рекомендуй снизить нагрузку "
             "и обратиться к врачу. Ты не заменяешь медицинскую консультацию.\n"
@@ -77,6 +84,12 @@ class AICoachService:
     def _profile_text(athlete_profile: Optional[Dict[str, Any]]) -> str:
         text = (athlete_profile or {}).get("summary_text")
         return text.strip() if isinstance(text, str) and text.strip() else NO_DATA
+
+    @staticmethod
+    def _zones_text(athlete_profile: Optional[Dict[str, Any]]) -> str:
+        """Готовые зоны из coach_service. Это текст, сформированный кодом, поэтому он вне блока <data>."""
+        text = (athlete_profile or {}).get("zones_text")
+        return text.strip() if isinstance(text, str) and text.strip() else NO_ZONES
 
     async def _ask(self, user_prompt: str, temperature: float) -> str:
         """Единая точка вызова LLM. AIClientError пробрасывается наверх для показа пользователю."""
@@ -97,15 +110,15 @@ class AICoachService:
         total_weeks: int,
     ) -> str:
         """Стратегический макроцикл подготовки по 4 фазам Дэниелса."""
+        weeks = int(total_weeks)
         user_prompt = (
             f"Сформируй макроцикл подготовки к забегу: {_clean(target_race, 100)}.\n"
-            f"Дата забега: {_clean(race_date, 20)} (недель на подготовку: {int(total_weeks)}).\n\n"
-            f"ПАСПОРТ АТЛЕТА (за последние 90 дней):\n"
-            f"<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
+            f"Дата забега: {_clean(race_date, 20)} (недель на подготовку: {weeks}).\n\n"
+            f"ПАСПОРТ АТЛЕТА (за последние 90 дней):\n<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
+            f"{self._zones_text(athlete_profile)}\n\n"
             "ЗАДАЧА:\n"
-            "1. Оцени текущий VDOT по контрольному забегу и пробежкам и рассчитай зоны темпа (E, M, T, I, R). "
-            "Если контрольного забега нет, честно укажи, что оценка приблизительная.\n"
-            f"2. Разбей период ({int(total_weeks)} нед.) на 4 фазы Дэниелса и укажи, сколько недель занимает каждая "
+            f"1. {ZONES_RULE} Если зон нет, попроси атлета сначала выполнить /sync и не указывай темпы.\n"
+            f"2. Разбей период ({weeks} нед.) на 4 фазы Дэниелса и укажи, сколько недель занимает каждая "
             "(сумма должна равняться общему числу недель):\n"
             "   - Фаза I: Закладка фундамента (аэробная база).\n"
             "   - Фаза II: Раннее качество (R-повторы, техника, экономичность).\n"
@@ -137,7 +150,9 @@ class AICoachService:
             f"МАКРОПЛАН (определи по нему, в какой фазе находится эта неделя):\n"
             f"<data>\n{macro_context}\n</data>\n\n"
             f"ТЕКУЩАЯ ФОРМА АТЛЕТА:\n<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
+            f"{self._zones_text(athlete_profile)}\n\n"
             "ТРЕБОВАНИЯ К НЕДЕЛЕ:\n"
+            f"- {ZONES_RULE}\n"
             "- Распиши каждый день: Пн, Вт, Ср, Чт, Пт, Сб, Вс.\n"
             "- Включи 1-2 дня полного отдыха или ОФП/растяжки.\n"
             "- Соблюдай 80% времени в лёгких зонах и 20% в интенсивных; после тяжёлой работы идёт лёгкий день.\n"
@@ -166,8 +181,10 @@ class AICoachService:
             f"анаэробный {_clean(activity.get('anaerobic_te'), 10)}\n"
             "</data>\n\n"
             f"ПРОФИЛЬ АТЛЕТА:\n<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
+            f"{self._zones_text(athlete_profile)}\n\n"
             "Дай краткий вердикт (до 1500 символов):\n"
-            "1. В какую зону попала тренировка? Не было ли заваливания в 'серую зону'?\n"
+            "1. В какую зону попала тренировка по темпу и пульсу? Сравнивай со зонами выше, "
+            "не было ли заваливания в 'серую зону'?\n"
             "2. Оценка физиологической нагрузки (Training Effect).\n"
             "3. Чёткая рекомендация на завтра (отдых, лёгкая пробежка или день ОФП)."
         )

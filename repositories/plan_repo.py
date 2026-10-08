@@ -1,0 +1,66 @@
+from datetime import date
+from typing import List, Optional, Tuple
+
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
+from models.base import utcnow
+
+
+class PlanRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_active(self, user_id: int) -> Optional[TrainingPlan]:
+        result = await self.session.execute(
+            select(TrainingPlan).where(TrainingPlan.user_id == user_id, TrainingPlan.active.is_(True))
+        )
+        return result.scalar_one_or_none()
+
+    async def create_active(
+        self, user_id: int, target_race: str, race_date: date, total_weeks: int, plan_details: str
+    ) -> TrainingPlan:
+        """Деактивирует старые планы и создаёт новый в одной транзакции."""
+        # UPDATE выполняется сразу (не через autoflush), поэтому частичный unique-индекс не сработает
+        await self.session.execute(
+            update(TrainingPlan)
+            .where(TrainingPlan.user_id == user_id, TrainingPlan.active.is_(True))
+            .values(active=False)
+        )
+        plan = TrainingPlan(
+            user_id=user_id, target_race=target_race, race_date=race_date,
+            total_weeks=total_weeks, plan_details=plan_details, active=True,
+        )
+        self.session.add(plan)
+        await self.session.flush()
+        return plan
+
+    async def list_active_with_users(self) -> List[Tuple[AppUser, TrainingPlan, Optional[AthleteProfile]]]:
+        stmt = (
+            select(AppUser, TrainingPlan, AthleteProfile)
+            .join(TrainingPlan, TrainingPlan.user_id == AppUser.id)
+            .outerjoin(AthleteProfile, AthleteProfile.user_id == AppUser.id)
+            .where(TrainingPlan.active.is_(True), AppUser.garmin_linked.is_(True))
+        )
+        return list((await self.session.execute(stmt)).tuples().all())
+
+    async def upsert_weekly(
+        self, user_id: int, training_plan_id: int, week_start: date, week_end: date, plan_details: str
+    ) -> WeeklyPlan:
+        """Повторная генерация той же недели перезаписывает расписание, а не плодит дубли."""
+        stmt = (
+            pg_insert(WeeklyPlan)
+            .values(
+                user_id=user_id, training_plan_id=training_plan_id,
+                week_start_date=week_start, week_end_date=week_end, plan_details=plan_details,
+            )
+            .on_conflict_do_update(
+                constraint="uq_weekly_plans_plan_week",
+                set_={"week_end_date": week_end, "plan_details": plan_details, "created_at": utcnow()},
+            )
+            .returning(WeeklyPlan)
+            .execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one()

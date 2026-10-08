@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, Text
+
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from models.base import Base
+from models.base import Base, utcnow
 
 if TYPE_CHECKING:
     from models.user import AppUser
@@ -20,6 +21,11 @@ class AthleteProfile(Base):
     max_heart_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     typical_easy_heart_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     garmin_vo2_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    vdot: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    best_effort_distance_m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    best_effort_time_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=func.now(), nullable=False
+    )
 
-    user: Mapped["AppUser"] = relationship("AppUser", back_populates="profile")
+    user: Mapped["AppUser"] = relationship("AppUser", back_populates="profile", lazy="raise")
