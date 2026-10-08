@@ -16,6 +16,16 @@ def next_week_dates(today: date) -> Tuple[date, date]:
     return monday, monday + timedelta(days=6)
 
 
+def plan_total_weeks(today: date, race_date: date) -> int:
+    """Число недель плана: от следующего понедельника до недели забега включительно.
+
+    Считается по тому же календарю, что и plan_week_number, поэтому первая рассылка
+    после создания плана получает неделю №1, а неделя забега последний номер.
+    """
+    first_monday, _ = next_week_dates(today)
+    return (monday_of(race_date) - first_monday).days // 7 + 1
+
+
 def plan_week_number(race_date: date, total_weeks: int, week_monday: date) -> Optional[int]:
     """Номер недели подготовки (1..total_weeks) для недели, начинающейся в week_monday.
 

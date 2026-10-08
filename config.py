@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Опрос сам токены не тратит, они уходят только на разбор новой пробежки; реже = меньше запросов к Garmin
     ACTIVITY_POLL_MINUTES: int = Field(default=120, ge=0)
 
+    # Часовой пояс пользователя, пока он не задан командой /timezone и не определён по Garmin при /sync
+    DEFAULT_TIMEZONE: str = "Europe/Moscow"
+
     # Пути (относительные значения из .env считаются от корня проекта)
     GARMIN_TOKENS_DIR: Path = BASE_DIR / ".garmin_tokens"
     KNOWLEDGE_BASE_PATH: Path = BASE_DIR / "sports_knowledge.txt"
@@ -58,6 +61,9 @@ class Settings(BaseSettings):
         """Без ключа выбранного провайдера бот упал бы только на первом запросе к модели."""
         if self.LLM_PROVIDER == "claude" and self.ANTHROPIC_API_KEY is None:
             raise ValueError("LLM_PROVIDER=claude, но ANTHROPIC_API_KEY не задан")
+        from services.user_time import normalize_timezone  # чистый модуль: без циклического импорта
+        if normalize_timezone(self.DEFAULT_TIMEZONE) is None:
+            raise ValueError(f"DEFAULT_TIMEZONE={self.DEFAULT_TIMEZONE!r}: неизвестный часовой пояс")
         return self
 
 

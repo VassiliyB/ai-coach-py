@@ -13,10 +13,12 @@ from clients.ai_client import AIClientError
 from database import async_session_maker
 from services.coach_service import build_profile_context, zones_for_profile
 from services.message_service import MessageService
+from services.plan_calendar import plan_total_weeks
 from services.plan_generator import PlanGenerationError, PlanGenerator
 from services.plan_renderer import render_macro
 from services.scheduler_service import TrainingSchedulerService, WeekStatus
 from services.user_service import UserService
+from services.user_time import local_today
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -79,14 +81,19 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
         )
         return
 
-    days_left = (race_date - datetime.now().date()).days
+    async with async_session_maker() as session:
+        user = await UserService.get_or_create_user(session, message.chat.id)
+    today = local_today(UserService.timezone_of(user))  # дата у пользователя, а не на сервере
+
+    days_left = (race_date - today).days
     if days_left < 14:
         await message.answer(
             "⚠️ До старта должно быть минимум 2 недели для построения периодизации. Укажите более позднюю дату:"
         )
         return
 
-    total_weeks = max(2, days_left // 7)
+    # Тот же календарь, что у рассылки: от следующего понедельника до недели забега
+    total_weeks = max(2, plan_total_weeks(today, race_date))
     data = await state.get_data()
     target_race = data.get("target_race", "Бег")
     await state.clear()
@@ -167,7 +174,8 @@ async def handle_test_week(message: Message, scheduler_service: TrainingSchedule
             )
             return
 
-        status = await scheduler_service.send_week(user=user, plan=active_plan, profile=profile)
+        today = local_today(UserService.timezone_of(user))
+        status = await scheduler_service.send_week(user=user, plan=active_plan, profile=profile, today=today)
 
         if status == WeekStatus.FINISHED:
             await status_msg.edit_text(

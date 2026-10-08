@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 from services.coach_service import MAX_VDOT, MIN_VDOT, calculate_vdot
+from services.user_time import offset_from_activity
 
 
 def format_pace(pace_sec_per_km: float) -> str:
@@ -58,6 +59,15 @@ def find_best_effort(activities: List[Dict[str, Any]]) -> Optional[Dict[str, Any
     return best
 
 
+def detect_utc_offset(activities: List[Dict[str, Any]]) -> Optional[str]:
+    """Смещение часового пояса атлета по самой свежей тренировке (Garmin отдаёт новые первыми)."""
+    for act in activities:
+        offset = offset_from_activity(act.get("startTimeLocal"), act.get("startTimeGMT"))
+        if offset:
+            return offset
+    return None
+
+
 def aggregate_profile_90d(
     activities: List[Dict[str, Any]],
     vo2_max: Optional[float],
@@ -76,6 +86,7 @@ def aggregate_profile_90d(
             "vdot": None,
             "best_effort_distance_m": None,
             "best_effort_time_s": None,
+            "utc_offset": None,
             "summary_text": f"За последние {days} дней беговых тренировок не обнаружено.",
         }
 
@@ -128,5 +139,6 @@ def aggregate_profile_90d(
         "vdot": round(best["vdot"], 1) if best else None,
         "best_effort_distance_m": best["distance_m"] if best else None,
         "best_effort_time_s": best["time_s"] if best else None,
+        "utc_offset": detect_utc_offset(activities),
         "summary_text": summary_text,
     }

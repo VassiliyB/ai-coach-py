@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,12 @@ class PlanRepository:
             .where(TrainingPlan.active.is_(True), AppUser.garmin_linked.is_(True))
         )
         return list((await self.session.execute(stmt)).tuples().all())
+
+    async def has_weekly(self, training_plan_id: int, week_start: date) -> bool:
+        stmt = select(exists().where(
+            WeeklyPlan.training_plan_id == training_plan_id, WeeklyPlan.week_start_date == week_start,
+        ))
+        return bool((await self.session.execute(stmt)).scalar())
 
     async def upsert_weekly(
         self, user_id: int, training_plan_id: int, week_start: date, week_end: date, plan_details: Dict[str, Any]

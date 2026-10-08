@@ -32,15 +32,25 @@ async def handle_sync(message: Message, garmin: GarminClient) -> None:
     try:
         profile_data = await garmin.get_athlete_profile_90d(chat_id=chat_id, days=90)
 
+        detected_tz = profile_data.get("utc_offset")
         async with async_session_maker() as session:
             user = await UserService.get_or_create_user(session, chat_id)
             await UserService.save_athlete_profile(session, user.id, profile_data)
+            # Пояс, заданный вручную через /timezone, не перезаписываем
+            tz_saved = user.timezone is None and detected_tz is not None
+            if tz_saved:
+                await UserService.set_timezone(session, user.id, detected_tz)
 
         await status_msg.delete()
 
+        tz_line = (
+            f"🕒 Часовой пояс по данным Garmin: <b>{detected_tz}</b>. Изменить: <code>/timezone</code>\n\n"
+            if tz_saved else ""
+        )
         text = (
             "📊 <b>Ваш спортивный паспорт обновлён:</b>\n\n"
             f"{html.escape(profile_data['summary_text'])}\n\n"
+            f"{tz_line}"
             "Теперь можно составить макроплан через <code>/plan</code>!"
         )
         for chunk in MessageService.chunk_message(text):

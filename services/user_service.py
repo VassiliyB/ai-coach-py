@@ -1,7 +1,7 @@
 # services/user_service.py
 """Тонкий фасад над репозиториями: управляет транзакциями (commit), логики здесь нет."""
 import logging
-from datetime import date
+from datetime import date, tzinfo
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,7 @@ from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
 from repositories import ActivityRepository, PlanRepository, UserRepository
 from schemas.plan import MacroPlan, WeekPlan
 from services.plan_storage import plan_to_details
+from services.user_time import to_tzinfo
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,18 @@ class UserService:
         user = await UserRepository(session).get_or_create(chat_id, username, first_name)
         await session.commit()
         return user
+
+    @staticmethod
+    async def set_timezone(session: AsyncSession, user_id: int, tz: str) -> None:
+        """tz уже нормализован (services.user_time.normalize_timezone)."""
+        await UserRepository(session).set_timezone(user_id, tz)
+        await session.commit()
+
+    @staticmethod
+    def timezone_of(user: AppUser) -> tzinfo:
+        """Часовой пояс пользователя; если не задан, пояс по умолчанию из настроек."""
+        from config import settings
+        return to_tzinfo(user.timezone, default=settings.DEFAULT_TIMEZONE)
 
     @staticmethod
     async def set_garmin_linked(session: AsyncSession, chat_id: int, linked: bool = True) -> None:
@@ -62,6 +75,10 @@ class UserService:
         session: AsyncSession,
     ) -> List[Tuple[AppUser, TrainingPlan, Optional[AthleteProfile]]]:
         return await PlanRepository(session).list_active_with_users()
+
+    @staticmethod
+    async def has_weekly_plan(session: AsyncSession, training_plan_id: int, week_start: date) -> bool:
+        return await PlanRepository(session).has_weekly(training_plan_id, week_start)
 
     @staticmethod
     async def save_weekly_plan(

@@ -9,3 +9,4 @@ openai>=1.14.0,<3.0.0
 garminconnect>=0.3.4,<0.4.0
 alembic>=1.13,<2.0
 anthropic>=1.12,<2.0
+tzdata>=2024.1

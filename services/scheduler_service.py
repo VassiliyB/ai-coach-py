@@ -1,6 +1,6 @@
 # services/scheduler_service.py
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -21,6 +21,7 @@ from services.plan_generator import PlanGenerator
 from services.plan_renderer import render_week
 from services.plan_storage import parse_macro
 from services.user_service import UserService
+from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now, local_today
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class TrainingSchedulerService:
             await self.bot.send_message(user.telegram_chat_id, LEGACY_PLAN_NOTICE, parse_mode="HTML")
             return WeekStatus.LEGACY_PLAN
 
-        monday, sunday = next_week_dates(today or datetime.now().date())
+        monday, sunday = next_week_dates(today or local_today(UserService.timezone_of(user)))
         week_number = plan_week_number(plan.race_date, macro.total_weeks, monday)
         if week_number is None:
             logger.info("План user_id=%s завершён: забег %s уже прошёл", user.id, plan.race_date)
@@ -120,35 +121,47 @@ class TrainingSchedulerService:
             await self.bot.send_message(chat_id=user.telegram_chat_id, text=chunk, parse_mode="HTML")
         return WeekStatus.SENT
 
-    async def sunday_weekly_distribution_job(self) -> None:
-        """Задача Cron: рассылка недельных расписаний каждое воскресенье в 15:00."""
-        logger.info("Запуск автоматической воскресной рассылки микроциклов...")
+    async def weekly_distribution_tick(self, now_utc: Optional[datetime] = None) -> int:
+        """Ежечасная проверка: отправляет неделю тем, у кого по их поясу воскресенье и уже 15:00.
 
+        Повторную отправку отсекает проверка «неделя уже создана»; если генерация упала,
+        следующая проверка через час попробует снова. Возвращает число отправленных недель.
+        """
+        now_utc = now_utc or datetime.now(timezone.utc)
         async with async_session_maker() as session:
             active_plans = await UserService.get_all_active_plans_with_users(session)
 
-        if not active_plans:
-            logger.info("Активных планов для рассылки не найдено.")
-            return
-
         sent = 0
         for user, plan, profile in active_plans:
+            local = local_now(UserService.timezone_of(user), now_utc)
+            if not is_weekly_send_time(local):
+                continue
+            if parse_macro(plan.plan_details) is None and local.hour != WEEKLY_SEND_HOUR:
+                continue  # подсказку про старый формат плана шлём один раз, в первый час рассылки
+            monday, _ = next_week_dates(local.date())
             try:
-                if await self.send_week(user, plan, profile) == WeekStatus.SENT:
+                async with async_session_maker() as session:
+                    if await UserService.has_weekly_plan(session, plan.id, monday):
+                        continue
+                if await self.send_week(user, plan, profile, today=local.date()) == WeekStatus.SENT:
                     sent += 1
             except Exception as exc:  # ошибка одного пользователя не останавливает рассылку остальным
                 logger.exception("Ошибка при генерации недели для user_id=%s: %s", user.id, exc)
 
-        logger.info("Воскресная рассылка завершена. Отправлено расписаний: %d из %d", sent, len(active_plans))
+        if sent:
+            logger.info("Рассылка недель: отправлено расписаний %d", sent)
+        return sent
 
     def start(self) -> None:
         """Запуск планировщика задач."""
-        # Каждое воскресенье в 15:00 (по системному времени сервера)
+        # Каждый час в :00 проверяем, у кого по местному времени наступило воскресенье 15:00
         self.scheduler.add_job(
-            self.sunday_weekly_distribution_job,
-            trigger=CronTrigger(day_of_week="sun", hour=15, minute=0),
-            id="sunday_weekly_plan_job",
+            self.weekly_distribution_tick,
+            trigger=CronTrigger(minute=0),
+            id="weekly_plan_tick",
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
         if self.activity_poller is not None:
             # max_instances=1: если круг опроса затянулся, следующий не стартует поверх него
@@ -162,7 +175,7 @@ class TrainingSchedulerService:
             )
         self.scheduler.start()
         logger.info(
-            "Фоновый планировщик запущен (воскресный микроцикл: ВС 15:00; опрос Garmin: %s).",
+            "Фоновый планировщик запущен (недели: ВС с 15:00 по времени пользователя; опрос Garmin: %s).",
             f"каждые {self.poll_minutes} мин" if self.activity_poller else "выключен",
         )
 

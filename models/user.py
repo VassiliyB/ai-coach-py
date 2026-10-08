@@ -20,6 +20,8 @@ class AppUser(Base):
     username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     garmin_linked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+    # Имя IANA ('Asia/Almaty') или смещение ('UTC+05:00'); NULL = settings.DEFAULT_TIMEZONE
+    timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
     )

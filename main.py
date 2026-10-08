@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from bot.handlers import analyze, plan, start, sync
+from bot.handlers import analyze, plan, settings as settings_handlers, start, sync
 from clients.garmin import GarminClient
 from clients.llm import create_llm_client
 from config import settings
@@ -56,6 +56,7 @@ async def main() -> None:
     dp.include_router(start.router)
     dp.include_router(sync.router)
     dp.include_router(analyze.router)
+    dp.include_router(settings_handlers.router)  # до plan: его хендлер состояния ловит любой текст
     dp.include_router(plan.router)
 
     # 5. Планировщик
