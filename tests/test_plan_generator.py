@@ -1,16 +1,19 @@
 import asyncio
 import json
 import math
+from datetime import date
 
 import pytest
 
 from clients.ai_errors import AIClientError, AIResponseFormatError
-from schemas.plan import MacroPlan
+from schemas.plan import MacroPlan, WeekPlan
 from services.coach_service import calculate_zones
 from services.plan_generator import (
     MAX_ATTEMPTS,
     PlanGenerationError,
     PlanGenerator,
+    intro_long_cap_km,
+    intro_target_km,
     parse_json_object,
 )
 from services.plan_validator import long_run_max_km
@@ -245,3 +248,40 @@ def test_macro_prompt_mentions_taper_limit():
     assert "ниже 70% от первой недели" in prompt
     assert "Названия фаз не указывай" in prompt
     assert '"name"' not in prompt
+
+
+# ---------- вводные дни до старта плана ----------
+
+def intro_data(first_type="easy"):
+    first = {"day": 4, "type": first_type, "distance_km": 6}
+    if first_type == "threshold":
+        first["quality_km"] = 2
+    return {"days": [
+        {"day": 1, "type": "rest"}, {"day": 2, "type": "rest"}, {"day": 3, "type": "rest"},
+        first,
+        {"day": 5, "type": "easy", "distance_km": 5},
+        {"day": 6, "type": "long", "distance_km": 9},
+        {"day": 7, "type": "rest"},
+    ]}
+
+
+INTRO_DAYS = [date(2026, 10, 8), date(2026, 10, 9), date(2026, 10, 10), date(2026, 10, 11)]   # чт–вс
+
+
+def test_intro_target_and_long_cap():
+    assert intro_target_km(37.8, 4) == 21.6
+    assert intro_long_cap_km(37.8, None) == 11.3                        # 30% обычной недели
+    assert intro_long_cap_km(80, calculate_zones(30)) == long_run_max_km(calculate_zones(30))  # 150 мин раньше 30%
+
+
+def test_intro_days_prompt_and_retry_on_quality():
+    gen, ai = generator([dumps(intro_data("threshold")), dumps(intro_data())])
+    week = asyncio.run(gen.generate_intro_days(PROFILE, "21.1 км", INTRO_DAYS, weekly_km=37.8))
+    assert week.total_km == 20.0
+    prompt = ai.calls[0]["messages"][-1]["content"]
+    assert "Чт 08.10, Пт 09.10, Сб 10.10, Вс 11.10 (4 дн.)" in prompt
+    assert "Объём вводных дней: 21.6 км" in prompt
+    assert "Дни Пн, Вт, Ср уже прошли" in prompt
+    assert "не длиннее 11.3 км" in prompt
+    assert ai.calls[0]["response_schema"] is WeekPlan
+    assert "недопустима во вводные дни" in ai.calls[1]["messages"][-1]["content"]

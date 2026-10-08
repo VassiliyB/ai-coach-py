@@ -3,7 +3,7 @@
 
 Каждая функция возвращает список замечаний (пустой список = план корректен).
 """
-from typing import Dict, FrozenSet, List, Optional
+from typing import Dict, FrozenSet, List, Optional, Set
 
 from schemas.plan import QUALITY_TYPES, MacroPlan, WeekPlan, WorkoutType
 from services.coach_service import TrainingZones
@@ -130,6 +130,67 @@ def validate_week(
                 f"более чем на {TARGET_KM_TOLERANCE:.0%}"
             )
 
+    return problems
+
+
+INTRO_MIN_DAYS_FOR_REST = 5   # от стольких вводных дней среди них нужен день отдыха или ОФП
+
+
+def validate_intro_days(
+    week: WeekPlan,
+    active_days: Set[int],
+    target_km: float,
+    weekly_km: float,
+    zones: Optional[TrainingZones] = None,
+) -> List[str]:
+    """Проверяет вводные дни до старта плана (неполная неделя перед неделей №1).
+
+    active_days: номера дней (1 = Пн), на которые составляются тренировки; остальные уже прошли.
+    target_km: объём вводных дней; weekly_km: обычный недельный объём атлета, от него лимит длительного
+    (доля от неполной недели была бы слишком строгой).
+    """
+    problems: List[str] = []
+    for d in week.days:
+        if d.day not in active_days and d.type != WorkoutType.REST:
+            problems.append(f"{DAY_NAMES[d.day - 1]}: этот день уже прошёл или сегодня, поставь rest")
+
+    # До старта плана только база, как в фазе I
+    for d in week.days:
+        if d.type in PHASE_FORBIDDEN_TYPES[1]:
+            problems.append(
+                f"{DAY_NAMES[d.day - 1]}: тренировка '{d.type.value}' недопустима во вводные дни; "
+                f"запрещены: {_type_list(PHASE_FORBIDDEN_TYPES[1])}"
+            )
+
+    for d in week.days:
+        if d.type != WorkoutType.LONG:
+            continue
+        long_cap = LONG_MAX_SHARE * weekly_km
+        if d.distance_km > long_cap + KM_EPS:
+            problems.append(
+                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км больше {LONG_MAX_SHARE:.0%} "
+                f"обычного недельного объёма атлета ({weekly_km:g} км), то есть не более {long_cap:.1f} км"
+            )
+        if zones is not None and d.distance_km > long_run_max_km(zones) + KM_EPS:
+            problems.append(
+                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км дольше потолка {LONG_MAX_MINUTES} мин "
+                f"(в лёгком темпе атлета это не более {long_run_max_km(zones):g} км)"
+            )
+        longer = [o for o in week.days if o.type != WorkoutType.LONG and (o.distance_km or 0) > d.distance_km + KM_EPS]
+        if longer:
+            problems.append(f"{DAY_NAMES[d.day - 1]}: длительный бег короче другой тренировки")
+
+    active = [d for d in week.days if d.day in active_days]
+    has_rest = any(d.type in (WorkoutType.REST, WorkoutType.CROSS) for d in active)
+    if len(active) >= INTRO_MIN_DAYS_FOR_REST and not has_rest:
+        problems.append(f"среди {len(active)} вводных дней нет ни одного дня отдыха или ОФП")
+
+    total = week.total_km
+    if target_km > 0 and abs(total - target_km) > TARGET_KM_TOLERANCE * target_km:
+        problems.append(
+            f"объём вводных дней {total:g} км отклоняется от планового {target_km:g} км "
+            f"более чем на {TARGET_KM_TOLERANCE:.0%}"
+        )
     return problems
 
 

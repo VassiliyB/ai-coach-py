@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -11,7 +12,7 @@ from clients.ai_errors import AIResponseFormatError
 from schemas.plan import PHASE_NAMES, MacroPlan, WeekPlan, WorkoutType
 from services import plan_validator as rules
 from services.coach_service import TrainingZones
-from services.plan_validator import format_problems, validate_macro, validate_week
+from services.plan_validator import format_problems, validate_intro_days, validate_macro, validate_week
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,19 @@ def target_km_for_week(macro: MacroPlan, week_number: int) -> float:
     """Плановый километраж недели из макроплана (за пределами плана берётся ближайшая неделя)."""
     idx = min(max(week_number, 1), len(macro.weekly_km)) - 1
     return macro.weekly_km[idx]
+
+
+def intro_target_km(weekly_km: float, days: int) -> float:
+    """Объём вводных дней: обычный недельный объём атлета пропорционально числу дней."""
+    return round(weekly_km * days / 7, 1)
+
+
+def intro_long_cap_km(weekly_km: float, zones: Optional[TrainingZones]) -> float:
+    """Потолок длительного во вводные дни: доля обычной недели, но не дольше LONG_MAX_MINUTES."""
+    cap = rules.LONG_MAX_SHARE * weekly_km
+    if zones is not None:
+        cap = min(cap, rules.long_run_max_km(zones))
+    return round(cap, 1)
 
 
 def _load_knowledge() -> str:
@@ -336,4 +350,61 @@ class PlanGenerator:
             messages, WeekPlan,
             lambda w: validate_week(w, target_km=target, phase_number=phase_number, zones=zones),
             temperature=0.4, what="недельный план",
+        )
+
+    # ---------------- Вводные дни до старта плана ----------------
+
+    def _intro_prompt(
+        self,
+        profile: Optional[Dict[str, Any]],
+        race: str,
+        days: List[date],
+        weekly_km: float,
+        zones: Optional[TrainingZones],
+    ) -> str:
+        active = {d.isoweekday() for d in days}
+        day_list = ", ".join(f"{rules.DAY_NAMES[d.weekday()]} {d:%d.%m}" for d in days)
+        past = ", ".join(rules.DAY_NAMES[n - 1] for n in range(1, 8) if n not in active)
+        target = intro_target_km(weekly_km, len(days))
+        return (
+            f"Составь тренировки на вводные дни до старта плана подготовки к забегу: {_clean(race)}.\n"
+            f"Неделя №1 плана начнётся в ближайший понедельник. Вводные дни: {day_list} ({len(days)} дн.).\n"
+            f"Объём вводных дней: {target:g} км (допуск ±{rules.TARGET_KM_TOLERANCE:.0%}), это обычный "
+            f"недельный объём атлета {weekly_km:g} км пропорционально числу дней.\n\n"
+            f"АТЛЕТ:\n<data>\n{_profile_block(profile)}\n</data>\n\n"
+            "Верни JSON такой структуры (пример формата, значения подбери сам):\n"
+            f"{WEEK_EXAMPLE}\n\n"
+            "ТРЕБОВАНИЯ:\n"
+            "1. days содержит ровно 7 элементов, day от 1 (Пн) до 7 (Вс). "
+            f"Дни {past} уже прошли или идут сегодня: для них type rest и пустой description.\n"
+            "2. Это база перед фазой I: только типы rest, easy, long, cross, без качественных тренировок. "
+            "Ускорения по 15-20 с можно добавить в description лёгкого бега.\n"
+            "3. distance_km — общая дистанция; для rest и cross её не указывай. quality_km не указывай.\n"
+            f"4. Длительный бег (long) не длиннее {intro_long_cap_km(weekly_km, zones):g} км "
+            "и не короче любой другой тренировки.\n"
+            f"5. Если вводных дней {rules.INTRO_MIN_DAYS_FOR_REST} или больше, среди них минимум один день "
+            "отдыха (rest) или ОФП (cross).\n"
+            "6. description — структура тренировки, без темпов и без длительности в минутах: их рассчитает система."
+        )
+
+    async def generate_intro_days(
+        self,
+        athlete_profile: Optional[Dict[str, Any]],
+        target_race: str,
+        days: List[date],
+        weekly_km: float,
+        zones: Optional[TrainingZones] = None,
+    ) -> WeekPlan:
+        """Тренировки на дни до старта плана (с завтрашнего дня до воскресенья) как неделя из 7 дней:
+        прошедшие дни и сегодня в ней rest. weekly_km: обычный недельный объём атлета."""
+        active = {d.isoweekday() for d in days}
+        target = intro_target_km(weekly_km, len(days))
+        messages = [
+            {"role": "system", "content": self._system_prompt},
+            {"role": "user", "content": self._intro_prompt(athlete_profile, target_race, days, weekly_km, zones)},
+        ]
+        return await self._generate(
+            messages, WeekPlan,
+            lambda w: validate_intro_days(w, active, target_km=target, weekly_km=weekly_km, zones=zones),
+            temperature=0.4, what="вводные дни",
         )

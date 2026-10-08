@@ -1,8 +1,8 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
-from services.plan_calendar import monday_of, next_week_dates, plan_total_weeks, plan_week_number
+from services.plan_calendar import intro_days, monday_of, next_week_dates, plan_total_weeks, plan_week_number
 
 # План из живой проверки: создан в четверг 08.10.2026, забег в воскресенье 03.01.2027, 12 недель
 RACE = date(2027, 1, 3)
@@ -61,3 +61,19 @@ def test_total_weeks_consistent_with_week_numbers():
     first_monday, _ = next_week_dates(today)
     assert plan_week_number(race, total, first_monday) == 1
     assert plan_week_number(race, total, monday_of(race)) == total
+
+
+@pytest.mark.parametrize("today,expected", [
+    (date(2026, 10, 7), [date(2026, 10, 8), date(2026, 10, 9), date(2026, 10, 10), date(2026, 10, 11)]),  # среда
+    (date(2026, 10, 5), [date(2026, 10, d) for d in range(6, 12)]),   # понедельник: вторник–воскресенье
+    (date(2026, 10, 10), [date(2026, 10, 11)]),                       # суббота: только воскресенье
+    (date(2026, 10, 11), []),                                          # воскресенье: неделя №1 начнётся завтра
+])
+def test_intro_days(today, expected):
+    assert intro_days(today) == expected
+
+
+def test_intro_days_end_before_first_plan_week():
+    today = date(2026, 10, 7)
+    first_monday, _ = next_week_dates(today)
+    assert intro_days(today)[-1] + timedelta(days=1) == first_monday

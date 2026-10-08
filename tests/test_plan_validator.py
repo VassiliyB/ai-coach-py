@@ -6,6 +6,7 @@ from services.plan_validator import (
     LONG_MAX_MINUTES,
     format_problems,
     long_run_max_km,
+    validate_intro_days,
     validate_macro,
     validate_week,
 )
@@ -337,3 +338,57 @@ def test_quality_allowed_in_later_phases_and_without_phase():
 
 def test_format_problems():
     assert format_problems(["а", "б"]) == "- а\n- б"
+
+
+# ---------- вводные дни до старта плана ----------
+
+def intro_week(days_by_number, active):
+    """Неделя, где дни вне active — отдых, а active заполнены по days_by_number."""
+    return week([days_by_number.get(n, day(n, "rest")) for n in range(1, 8)])
+
+
+INTRO_ACTIVE = {4, 5, 6, 7}   # план составлен в среду: четверг–воскресенье
+
+
+def good_intro():
+    # 20 км за 4 дня при обычных 37.8 км в неделю: цель 37.8 * 4 / 7 = 21.6, допуск ±15%
+    days = {4: day(4, "easy", 5), 5: day(5, "easy", 6), 6: day(6, "long", 9), 7: day(7, "rest")}
+    return intro_week(days, INTRO_ACTIVE)
+
+
+def test_good_intro_days():
+    assert validate_intro_days(good_intro(), INTRO_ACTIVE, target_km=21.6, weekly_km=37.8) == []
+
+
+def test_intro_past_day_must_be_rest():
+    days = {2: day(2, "easy", 4), 4: day(4, "easy", 5), 5: day(5, "easy", 5), 6: day(6, "long", 8)}
+    w = intro_week(days, INTRO_ACTIVE)
+    assert has(validate_intro_days(w, INTRO_ACTIVE, target_km=21.6, weekly_km=37.8), "Вт: этот день уже прошёл")
+
+
+def test_intro_forbids_quality():
+    w = intro_week({4: day(4, "threshold", 7, quality=2), 5: day(5, "easy", 5), 6: day(6, "long", 9)}, INTRO_ACTIVE)
+    assert has(validate_intro_days(w, INTRO_ACTIVE, target_km=21.6, weekly_km=37.8), "недопустима во вводные дни")
+
+
+def test_intro_long_run_capped_by_usual_weekly_volume():
+    # 12 км из 21: 57% вводных дней, но лимит считается от обычной недели 37.8 км -> 11.3 км
+    w = intro_week({4: day(4, "easy", 5), 5: day(5, "easy", 4), 6: day(6, "long", 12)}, INTRO_ACTIVE)
+    problems = validate_intro_days(w, INTRO_ACTIVE, target_km=21.6, weekly_km=37.8)
+    assert has(problems, "длительный бег 12 км больше 30% обычного недельного объёма")
+    w_ok = intro_week({4: day(4, "easy", 6), 5: day(5, "easy", 5), 6: day(6, "long", 11)}, INTRO_ACTIVE)
+    assert validate_intro_days(w_ok, INTRO_ACTIVE, target_km=21.6, weekly_km=37.8) == []
+
+
+def test_intro_volume_far_off():
+    assert has(validate_intro_days(good_intro(), INTRO_ACTIVE, target_km=30, weekly_km=50), "объём вводных дней")
+
+
+def test_intro_long_week_needs_rest_day():
+    active = {2, 3, 4, 5, 6, 7}   # план составлен в понедельник: 6 вводных дней
+    w = intro_week({n: day(n, "easy", 5) for n in range(2, 7)} | {7: day(7, "long", 6)}, active)
+    assert has(validate_intro_days(w, active, target_km=31, weekly_km=36), "нет ни одного дня отдыха")
+
+
+def test_intro_without_volume_skips_target_check():
+    assert validate_intro_days(good_intro(), INTRO_ACTIVE, target_km=0, weekly_km=37.8) == []

@@ -119,6 +119,30 @@ def render_week(
     return "\n".join(lines)
 
 
+def render_intro_days(
+    week: WeekPlan,
+    days: List[date],
+    *,
+    zones: Optional[TrainingZones] = None,
+    max_hr: Optional[int] = None,
+) -> str:
+    """Вводные дни до старта плана: показываются только days, прошедшие дни недели (rest) скрыты."""
+    active = {d.isoweekday() for d in days}
+    shown = [d for d in week.days if d.day in active]
+    lines = [
+        f"🔜 <b>До старта плана</b>{SEP}{days[0]:%d.%m} – {days[-1]:%d.%m}",
+        "Неделя №1 начнётся в понедельник, а пока база: только лёгкий бег.",
+        f"Объём: <b>{_km(round(sum(d.distance_km or 0.0 for d in shown), 1))} км</b>",
+        "",
+        "\n\n".join(_render_day(d, zones, max_hr) for d in shown),
+    ]
+    if week.note.strip():
+        lines += ["", f"💬 <i>{_e(week.note.strip())}</i>"]
+    if zones is None:
+        lines += ["", "ℹ️ Темпы не показаны: выполните /sync, чтобы рассчитать VDOT."]
+    return "\n".join(lines)
+
+
 def render_macro(
     macro: MacroPlan,
     target_race: str,

@@ -1,7 +1,7 @@
 # services/plan_calendar.py
 """Календарь плана: границы недель и номер недели подготовки. Чистые функции, без I/O."""
 from datetime import date, timedelta
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 DATE_FORMAT = "%d.%m.%Y"
 
@@ -14,6 +14,16 @@ def next_week_dates(today: date) -> Tuple[date, date]:
     """Понедельник и воскресенье следующей недели (в воскресенье это уже завтрашняя неделя)."""
     monday = monday_of(today) + timedelta(days=7)
     return monday, monday + timedelta(days=6)
+
+
+def intro_days(today: date) -> List[date]:
+    """Вводные дни до старта плана: с завтрашнего дня до воскресенья текущей недели.
+
+    План начинается со следующего понедельника, эти дни иначе остались бы без тренировок.
+    В воскресенье список пуст: неделя №1 начинается завтра.
+    """
+    sunday = monday_of(today) + timedelta(days=6)
+    return [today + timedelta(days=i) for i in range(1, (sunday - today).days + 1)]
 
 
 def plan_total_weeks(today: date, race_date: date) -> int:

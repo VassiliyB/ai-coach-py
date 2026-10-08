@@ -152,3 +152,25 @@ def test_macro_notes_and_escaping():
     assert "• Боль &gt; 3 из 10: отдых" in text
     assert "5 &lt;км&gt;" in text
     assert_balanced(text)
+
+
+# ---------- render_intro_days ----------
+
+def test_intro_days_show_only_remaining_days():
+    from services.plan_renderer import render_intro_days
+    week = WeekPlan.model_validate({"days": [
+        {"day": 1, "type": "rest"}, {"day": 2, "type": "rest"}, {"day": 3, "type": "rest"},
+        {"day": 4, "type": "easy", "distance_km": 5, "description": "Лёгкий бег + 4 ускорения"},
+        {"day": 5, "type": "easy", "distance_km": 6},
+        {"day": 6, "type": "long", "distance_km": 9},
+        {"day": 7, "type": "rest", "description": "Отдых <перед> неделей №1"},
+    ]})
+    days = [date(2026, 10, 8), date(2026, 10, 9), date(2026, 10, 10), date(2026, 10, 11)]  # чт–вс
+    text = render_intro_days(week, days, zones=ZONES, max_hr=200)
+    assert "До старта плана</b> · 08.10 – 11.10" in text
+    assert "Объём: <b>20 км</b>" in text
+    assert "<b>Пн</b>" not in text and "<b>Ср</b>" not in text   # прошедшие дни скрыты
+    assert "<b>Чт</b>" in text and "<b>Вс</b>" in text
+    assert f"<code>{ZONES.easy}</code>" in text and "⏱ ≈" in text
+    assert "&lt;перед&gt;" in text                              # текст модели экранирован
+    assert_balanced(text)

@@ -1,6 +1,7 @@
 # bot/handlers/plan.py
 import logging
-from datetime import datetime
+from datetime import date, datetime
+from typing import Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -11,11 +12,11 @@ from bot.keyboards import get_target_distances_keyboard
 from bot.states import PlanCreationStates
 from clients.ai_client import AIClientError
 from database import async_session_maker
-from services.coach_service import build_profile_context, zones_for_profile
+from services.coach_service import TrainingZones, build_profile_context, zones_for_profile
 from services.message_service import MessageService
-from services.plan_calendar import plan_total_weeks
+from services.plan_calendar import intro_days, monday_of, plan_total_weeks
 from services.plan_generator import PlanGenerationError, PlanGenerator
-from services.plan_renderer import render_macro
+from services.plan_renderer import render_intro_days, render_macro
 from services.scheduler_service import TrainingSchedulerService, WeekStatus
 from services.user_service import UserService
 from services.user_time import local_today
@@ -123,7 +124,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
 
         # 3. Сохранение в БД (старый активный план деактивируется в той же транзакции)
         async with async_session_maker() as session:
-            await UserService.save_training_plan(
+            saved = await UserService.save_training_plan(
                 session=session,
                 user_id=user_id,
                 target_race=target_race,
@@ -139,6 +140,14 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
         for chunk in MessageService.chunk_message(text):
             await message.answer(chunk, parse_mode="HTML")
 
+        # 5. Дни до понедельника, чтобы не простаивать до недели №1. Ошибка здесь план не отменяет
+        weekly_km = getattr(profile, "average_weekly_km", None) or macro.weekly_km[0]
+        await _send_intro_days(
+            message, plan_generator, profile_dict, target_race, today,
+            weekly_km=weekly_km, zones=zones, max_hr=getattr(profile, "max_heart_rate", None),
+            user_id=user_id, plan_id=saved.id,
+        )
+
     except PlanGenerationError as exc:
         logger.warning("Макроплан не прошёл проверки (chat_id=%s): %s", message.chat.id, exc.problems)
         await status_msg.edit_text(
@@ -151,6 +160,48 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
     except Exception as exc:
         logger.exception("Ошибка при генерации макроплана: %s", exc)
         await status_msg.edit_text("❌ Произошла ошибка при составлении плана. Попробуйте повторить запрос.")
+
+
+async def _send_intro_days(
+    message: Message,
+    plan_generator: PlanGenerator,
+    profile_dict: dict,
+    target_race: str,
+    today: date,
+    *,
+    weekly_km: float,
+    zones: Optional[TrainingZones],
+    max_hr: Optional[int],
+    user_id: int,
+    plan_id: int,
+) -> None:
+    """Тренировки с завтрашнего дня до воскресенья по поясу пользователя.
+
+    Сохраняются неделей текущего понедельника: неделя №1 и рассылка от этого не меняются.
+    """
+    days = intro_days(today)
+    if not days:
+        return  # воскресенье: неделя №1 начнётся завтра и придёт рассылкой
+    status_msg = await message.answer("🧠 Составляю тренировки до понедельника...")
+    try:
+        week = await plan_generator.generate_intro_days(
+            athlete_profile=profile_dict, target_race=target_race, days=days, weekly_km=weekly_km, zones=zones,
+        )
+        async with async_session_maker() as session:
+            await UserService.save_weekly_plan(
+                session=session, user_id=user_id, training_plan_id=plan_id,
+                week_start=monday_of(today), week_end=days[-1], plan=week,
+            )
+        await status_msg.delete()
+        text = render_intro_days(week, days, zones=zones, max_hr=max_hr)
+        for chunk in MessageService.chunk_message(text):
+            await message.answer(chunk, parse_mode="HTML")
+    except Exception as exc:
+        logger.warning("Вводные дни не составлены (chat_id=%s): %s", message.chat.id, exc)
+        await status_msg.edit_text(
+            "⚠️ Тренировки до понедельника составить не удалось. План сохранён, "
+            "неделя №1 придёт в воскресенье, а получить её раньше можно через /test_week."
+        )
 
 
 @router.message(Command("test_week"), flags={"user_lock": "/test_week"})
