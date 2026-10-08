@@ -7,11 +7,13 @@ from typing import Optional
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from database import async_session_maker
 from models.athlete_profile import AthleteProfile
 from models.training_plan import TrainingPlan
 from models.user import AppUser
+from services.activity_poller import ActivityPoller
 from services.coach_service import build_profile_context, zones_for_profile
 from services.message_service import MessageService
 from services.plan_calendar import DATE_FORMAT, next_week_dates, plan_week_number
@@ -37,9 +39,18 @@ class WeekStatus(str, Enum):
 class TrainingSchedulerService:
     """Сервис фоновых периодических задач (рассылка планов и опрос активностей)."""
 
-    def __init__(self, bot: Bot, plan_generator: PlanGenerator) -> None:
+    def __init__(
+        self,
+        bot: Bot,
+        plan_generator: PlanGenerator,
+        activity_poller: Optional[ActivityPoller] = None,
+        poll_minutes: int = 0,
+    ) -> None:
+        """activity_poller и poll_minutes > 0 включают опрос Garmin с этим интервалом."""
         self.bot = bot
         self.plan_generator = plan_generator
+        self.activity_poller = activity_poller if poll_minutes > 0 else None
+        self.poll_minutes = poll_minutes
         self.scheduler = AsyncIOScheduler()
 
     async def send_week(
@@ -139,8 +150,21 @@ class TrainingSchedulerService:
             id="sunday_weekly_plan_job",
             replace_existing=True,
         )
+        if self.activity_poller is not None:
+            # max_instances=1: если круг опроса затянулся, следующий не стартует поверх него
+            self.scheduler.add_job(
+                self.activity_poller.poll_all,
+                trigger=IntervalTrigger(minutes=self.poll_minutes),
+                id="activity_poll_job",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
         self.scheduler.start()
-        logger.info("Фоновый планировщик запущен (воскресный микроцикл: ВС 15:00).")
+        logger.info(
+            "Фоновый планировщик запущен (воскресный микроцикл: ВС 15:00; опрос Garmin: %s).",
+            f"каждые {self.poll_minutes} мин" if self.activity_poller else "выключен",
+        )
 
     def shutdown(self) -> None:
         """Остановка планировщика при завершении программы."""

@@ -40,9 +40,11 @@ services/plan_calendar.py   границы недель, номер недели
 services/plan_storage.py    plan_details (JSONB) <-> MacroPlan / WeekPlan
 services/plan_renderer.py   сообщения Telegram (HTML) из WeekPlan и MacroPlan
 services/ai_coach_service.py текстовый разбор тренировки для /analyze (зоны считает activity_zones)
-services/activity_zones.py зона тренировки по темпу и пульсу, % ЧССmax, серая зона
+services/activity_zones.py зона тренировки по темпу и пульсу, % ЧССmax, серая зона, пульс выше зоны темпа
+services/activity_polling.py какие новые тренировки разбирать при опросе (чистые функции)
+services/activity_poller.py опрос Garmin (интервал ACTIVITY_POLL_MINUTES), автоматический разбор новых пробежек
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
-services/scheduler_service.py send_week и воскресная рассылка недель (ВС 15:00, время сервера)
+services/scheduler_service.py send_week, воскресная рассылка недель (ВС 15:00, время сервера), задача опроса Garmin
 bot/                        states.py, keyboards.py, handlers/{start,sync,plan,analyze}.py
 migrations/                 Alembic (env.py берёт URL из settings)
 tests/                      pytest, без сети, БД и .env
@@ -83,6 +85,9 @@ python generate_token.py                              # вход в Garmin (сн
 
 **Garmin**
 - Библиотека синхронная: все вызовы через `asyncio.to_thread`. Состояние MFA хранится в `GarminClient._pending_auth` (в памяти процесса).
+- Опрос активностей: раз в `ACTIVITY_POLL_MINUTES` минут (настройка в `.env`, по умолчанию 120, `0` выключает опрос). Сам опрос токены не тратит, они уходят только на разбор новой пробежки. Опрос: последние `FETCH_LIMIT` (10) тренировок, пользователи по очереди, задача с `max_instances=1`. При 429 круг прерывается: блок IP общий для всех.
+- Первый опрос пользователя (нет записей в `processed_activities`) помечает всё без разбора. Дальше тренировка сначала захватывается атомарной вставкой (`claim_activity`, `ON CONFLICT DO NOTHING`), потом разбирается: дублей не бывает, но при сбое ИИ разбор этой тренировки теряется.
+- Разбираются только беговые тренировки не старше 24 часов по `startTimeGMT`; более старые (например, после простоя бота) помечаются молча.
 - Ошибка 429 означает блок IP: помогает смена сети или `generate_token.py`.
 
 **LLM**
@@ -124,12 +129,12 @@ python generate_token.py                              # вход в Garmin (сн
 - Этап 2: модели, репозитории, Alembic.
 - Этап 3: `coach_service` (VDOT и зоны), поля профиля, тесты.
 - Этап 4: схемы, валидатор, генератор, темпы, пульс и длительность кодом, рендер; `plan_details` в JSONB; `/plan`, `/test_week` и воскресная рассылка на структурных планах; клиент Claude и выбор провайдера.
-- Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI.
+- Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI; поллинг активностей с автоматическим разбором новых пробежек.
 
 Проверено скриптами на живой модели и локальной БД (запись с откатом): генерация макроплана и недели, сохранение и чтение JSONB, `send_week` для нового, старого и завершённого плана. Живая проверка в Telegram (`/sync`, `/plan`, `/test_week`) ещё не подтверждена.
 
 Дальше:
-- Этап 5: поллинг активностей (`ProcessedActivity`), таймзоны пользователей, блокировки.
+- Этап 5: таймзоны пользователей, блокировки.
 - Этап 6: ruff, CI, Docker, `/delete_me`, `requirements-dev.txt` для pytest.
 
 ## Известные ограничения

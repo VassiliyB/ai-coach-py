@@ -10,6 +10,7 @@ from clients.garmin import GarminClient
 from clients.llm import create_llm_client
 from config import settings
 from database import engine, run_migrations
+from services.activity_poller import ActivityPoller
 from services.ai_coach_service import AICoachService
 from services.plan_generator import PlanGenerator
 from services.scheduler_service import TrainingSchedulerService
@@ -35,7 +36,11 @@ async def main() -> None:
     logger.info("Провайдер LLM: %s", settings.LLM_PROVIDER)
     ai_coach = AICoachService(ai_client=ai_client)
     plan_generator = PlanGenerator(ai_client=ai_client)
-    scheduler_service = TrainingSchedulerService(bot=bot, plan_generator=plan_generator)
+    activity_poller = ActivityPoller(bot=bot, garmin=garmin_client, ai_coach=ai_coach)
+    scheduler_service = TrainingSchedulerService(
+        bot=bot, plan_generator=plan_generator,
+        activity_poller=activity_poller, poll_minutes=settings.ACTIVITY_POLL_MINUTES,
+    )
 
     # 3. Диспетчер: именованные аргументы становятся зависимостями хендлеров (DI).
     #    Имя аргумента = имя параметра в хендлере (garmin, ai_coach, plan_generator, scheduler_service).

@@ -110,6 +110,14 @@ class GarminClient:
         activities = client.get_activities(start=0, limit=1)
         return parse_last_activity(activities[0]) if activities else None
 
+    def _fetch_recent_activities_sync(self, chat_id: int, limit: int) -> List[Dict[str, Any]]:
+        client = self._init_session_sync(chat_id)
+        try:
+            activities = client.get_activities(start=0, limit=limit)
+        except GarminConnectTooManyRequestsError as exc:
+            raise GarminRateLimitError("Превышен лимит запросов к Garmin API (429).") from exc
+        return [parse_last_activity(act) for act in activities or []]
+
     def _fetch_profile_90d_sync(self, chat_id: int, days: int) -> Dict[str, Any]:
         client = self._init_session_sync(chat_id)
 
@@ -159,6 +167,10 @@ class GarminClient:
 
     async def get_last_activity(self, chat_id: int) -> Optional[Dict[str, Any]]:
         return await asyncio.to_thread(self._fetch_last_activity_sync, chat_id)
+
+    async def get_recent_activities(self, chat_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Последние тренировки (новые первыми) в плоском формате parse_last_activity."""
+        return await asyncio.to_thread(self._fetch_recent_activities_sync, chat_id, limit)
 
     async def get_athlete_profile_90d(self, chat_id: int, days: int = 90) -> Dict[str, Any]:
         return await asyncio.to_thread(self._fetch_profile_90d_sync, chat_id, days)

@@ -25,6 +25,7 @@ HR_ZONE_NAMES = {
     "I": "зона I (МПК)",
 }
 GRAY_ZONE = "M"
+ZONE_ORDER = ["below_E", "E", "M", "T", "I", "R"]  # от лёгкой к интенсивной
 
 
 def pace_zone(pace_sec: Optional[float], zones: Optional[TrainingZones]) -> Optional[str]:
@@ -65,11 +66,16 @@ class ActivityZones:
         return GRAY_ZONE in (self.pace_zone, self.hr_zone)
 
     @property
-    def mismatch(self) -> bool:
-        """Темп и пульс указывают на разные зоны (например, лёгкий темп при высоком пульсе)."""
+    def hr_above_pace(self) -> bool:
+        """Пульс выше зоны, которой соответствует темп: признак усталости, жары или дрейфа пульса.
+
+        Обратный случай (медленный темп при лёгком пульсе) нормален для восстановительного бега и не отмечается.
+        """
         if not self.pace_zone or not self.hr_zone:
             return False
-        return self.pace_zone != self.hr_zone
+        # Темп медленнее E сравнивается как E: лёгкий пульс на медленной пробежке нормален
+        pace_index = max(ZONE_ORDER.index(self.pace_zone), ZONE_ORDER.index("E"))
+        return ZONE_ORDER.index(self.hr_zone) > pace_index
 
 
 def classify_activity(
@@ -118,6 +124,6 @@ def format_activity_zones(
         lines.append(f"- Пульс лёгкого бега (зона E) для атлета: {easy_hr[0]}–{easy_hr[1]} уд/мин.")
     if result.gray_zone:
         lines.append("- Тренировка попала в серую зону (умеренная интенсивность по Фицджеральду).")
-    if result.mismatch:
-        lines.append("- Темп и пульс указывают на разные зоны.")
+    if result.hr_above_pace:
+        lines.append("- Пульс выше зоны, которой соответствует темп.")
     return "\n".join(lines)

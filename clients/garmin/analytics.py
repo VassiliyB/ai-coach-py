@@ -23,6 +23,7 @@ def parse_last_activity(raw_activity: Dict[str, Any]) -> Dict[str, Any]:
         "activity_id": str(raw_activity.get("activityId")),
         "name": raw_activity.get("activityName"),
         "start_time": raw_activity.get("startTimeLocal"),
+        "start_time_gmt": raw_activity.get("startTimeGMT"),  # для поллинга: возраст тренировки в UTC
         "activity_type": act_type,
         "is_running": "running" in act_type.lower(),
         "distance_km": round(dist_m / 1000.0, 2),

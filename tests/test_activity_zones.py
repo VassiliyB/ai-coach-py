@@ -48,12 +48,12 @@ def test_easy_pace_with_gray_zone_pulse():
     # тренировка из живой проверки: лёгкий темп, но пульс 84% ЧССmax
     result = classify_activity(344, 151, ZONES, MAX_HR)
     assert (result.pace_zone, result.hr_zone, result.hr_pct) == ("E", "M", 84)
-    assert result.gray_zone and result.mismatch
+    assert result.gray_zone and result.hr_above_pace
     text = format_activity_zones(result, 344, 151, ZONES, MAX_HR)
     assert "Средний темп 5:44 /км: зона E" in text
     assert "151 уд/мин = 84% от ЧССmax 180: зона M (серая зона)" in text
     assert "Пульс лёгкого бега (зона E) для атлета: 117–142 уд/мин" in text
-    assert "серую зону" in text and "разные зоны" in text
+    assert "серую зону" in text and "Пульс выше зоны" in text
 
 
 def test_peak_hr_line():
@@ -65,9 +65,9 @@ def test_peak_hr_line():
 
 def test_clean_easy_run():
     result = classify_activity(370, 135, ZONES, MAX_HR)
-    assert not result.gray_zone and not result.mismatch
+    assert not result.gray_zone and not result.hr_above_pace
     text = format_activity_zones(result, 370, 135, ZONES, MAX_HR)
-    assert "серую зону" not in text and "разные зоны" not in text
+    assert "серую зону" not in text and "Пульс выше зоны" not in text
 
 
 def test_without_vdot_and_hr():
@@ -80,3 +80,20 @@ def test_parse_last_activity_gives_pace_seconds():
     act = parse_last_activity({"activityType": {"typeKey": "running"}, "distance": 10000.0, "duration": 3440.0})
     assert act["avg_pace_sec"] == 344.0
     assert parse_last_activity({"distance": 0.0, "duration": 600.0})["avg_pace_sec"] is None
+
+
+def test_slow_recovery_run_is_not_flagged():
+    # живой опрос: 8 км в темпе 6:50 (медленнее E) при пульсе 125 (69%, зона E) — нормальный восстановительный бег
+    result = classify_activity(410, 125, ZONES, MAX_HR)
+    assert (result.pace_zone, result.hr_zone) == ("below_E", "E")
+    assert not result.hr_above_pace and not result.gray_zone
+
+
+def test_fast_pace_low_pulse_is_not_flagged():
+    # интервалы со средним пульсом ниже зоны темпа (пульс не успевает подняться) — не тревога
+    assert not classify_activity(270, 150, ZONES, MAX_HR).hr_above_pace
+
+
+def test_slow_pace_with_gray_pulse_is_flagged():
+    # медленнее E, но пульс 84%: тревожный признак (усталость, жара)
+    assert classify_activity(420, 151, ZONES, MAX_HR).hr_above_pace

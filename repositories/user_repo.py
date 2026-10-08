@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -37,6 +37,16 @@ class UserRepository:
         await self.session.execute(
             update(AppUser).where(AppUser.telegram_chat_id == chat_id).values(garmin_linked=linked)
         )
+
+    async def list_linked_with_profiles(self) -> List[Tuple[AppUser, Optional[AthleteProfile]]]:
+        """Пользователи с привязанным Garmin и их профили (профиля может ещё не быть)."""
+        stmt = (
+            select(AppUser, AthleteProfile)
+            .outerjoin(AthleteProfile, AthleteProfile.user_id == AppUser.id)
+            .where(AppUser.garmin_linked.is_(True))
+            .order_by(AppUser.id)
+        )
+        return list((await self.session.execute(stmt)).tuples().all())
 
     async def get_profile(self, user_id: int) -> Optional[AthleteProfile]:
         result = await self.session.execute(select(AthleteProfile).where(AthleteProfile.user_id == user_id))

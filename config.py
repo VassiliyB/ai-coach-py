@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # База данных PostgreSQL (асинхронный диалект asyncpg)
     DATABASE_URL: SecretStr = Field(..., description="URL подключения к БД Postgres")
 
+    # Опрос Garmin: раз в сколько минут искать новые пробежки для автоматического разбора (0 = выключен).
+    # Опрос сам токены не тратит, они уходят только на разбор новой пробежки; реже = меньше запросов к Garmin
+    ACTIVITY_POLL_MINUTES: int = Field(default=120, ge=0)
+
     # Пути (относительные значения из .env считаются от корня проекта)
     GARMIN_TOKENS_DIR: Path = BASE_DIR / ".garmin_tokens"
     KNOWLEDGE_BASE_PATH: Path = BASE_DIR / "sports_knowledge.txt"

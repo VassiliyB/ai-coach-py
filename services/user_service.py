@@ -2,12 +2,12 @@
 """Тонкий фасад над репозиториями: управляет транзакциями (commit), логики здесь нет."""
 import logging
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
-from repositories import PlanRepository, UserRepository
+from repositories import ActivityRepository, PlanRepository, UserRepository
 from schemas.plan import MacroPlan, WeekPlan
 from services.plan_storage import plan_to_details
 
@@ -73,3 +73,27 @@ class UserService:
         )
         await session.commit()
         return weekly
+
+    # ---------------- Обработанные активности (поллинг Garmin) ----------------
+
+    @staticmethod
+    async def list_linked_users_with_profiles(
+        session: AsyncSession,
+    ) -> List[Tuple[AppUser, Optional[AthleteProfile]]]:
+        return await UserRepository(session).list_linked_with_profiles()
+
+    @staticmethod
+    async def has_processed_activities(session: AsyncSession, user_id: int) -> bool:
+        return await ActivityRepository(session).has_any(user_id)
+
+    @staticmethod
+    async def mark_activities_processed(session: AsyncSession, user_id: int, activity_ids: Iterable[str]) -> None:
+        await ActivityRepository(session).mark_many(user_id, activity_ids)
+        await session.commit()
+
+    @staticmethod
+    async def claim_activity(session: AsyncSession, user_id: int, activity_id: str) -> bool:
+        """Атомарно помечает активность обработанной. True, если её ещё никто не обработал."""
+        claimed = await ActivityRepository(session).mark_processed(user_id, activity_id)
+        await session.commit()
+        return claimed
