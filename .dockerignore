@@ -1,0 +1,27 @@
+# Секреты и данные пользователей в образ не попадают: .env подключается при запуске (env_file),
+# токены Garmin живут в томе
+.env
+.env.*
+.garmin_tokens/
+*.json
+
+# Окружение, кэши, служебное
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+.idea/
+.vscode/
+*.log
+
+# Для работы бота не нужны
+tests/
+requirements-dev.txt
+reset_db.py
+Dockerfile
+docker-compose*.yml
+.dockerignore

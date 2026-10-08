@@ -40,3 +40,13 @@ jobs:
 
       - name: Pytest
         run: python -m pytest -q
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Сборка образа (без публикации)
+        run: docker build --tag ai-coach-py:ci .

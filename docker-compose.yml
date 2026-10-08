@@ -1,0 +1,37 @@
+# Бот и PostgreSQL. Запуск: docker compose up -d --build; логи: docker compose logs -f bot
+# В .env, кроме ключей бота, нужен POSTGRES_PASSWORD (пароль БД в контейнере);
+# POSTGRES_USER и POSTGRES_DB необязательны (по умолчанию coach и coach_db).
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coach}
+      POSTGRES_DB: ${POSTGRES_DB:-coach_db}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порт наружу не публикуется: БД нужна только боту внутри сети compose
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Перекрывают значения из .env: внутри compose БД доступна по имени сервиса db
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}@db:5432/${POSTGRES_DB:-coach_db}
+      GARMIN_TOKENS_DIR: /app/.garmin_tokens
+    volumes:
+      - garmin_tokens:/app/.garmin_tokens
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  garmin_tokens:

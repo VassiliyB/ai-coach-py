@@ -50,7 +50,9 @@ services/scheduler_service.py send_week, ежечасная проверка р�
 bot/                        states.py, keyboards.py, middlewares.py (UserLockMiddleware), handlers/{start,sync,plan,analyze,settings}.py
 migrations/                 Alembic (env.py берёт URL из settings)
 tests/                      pytest, без сети, БД и .env
-.github/workflows/ci.yml    CI: ruff и pytest на каждый пуш и pull request в main (Ubuntu, Python 3.12, без секретов)
+.github/workflows/ci.yml    CI: ruff, pytest и сборка Docker-образа на каждый пуш и pull request в main
+Dockerfile, .dockerignore   образ бота: python:3.12-slim, только requirements.txt, пользователь coach
+docker-compose.yml          бот + PostgreSQL 16, тома pgdata и garmin_tokens
 ```
 
 ## Команды (Windows, PowerShell, venv)
@@ -64,6 +66,15 @@ alembic revision --autogenerate -m "описание"         # после из�
 alembic upgrade head                                  # применить; alembic current / alembic check
 python try_plan_generator.py                          # ручная проверка генерации с живой моделью
 python generate_token.py                              # вход в Garmin (сначала /start боту!)
+```
+
+Docker (нужен `POSTGRES_PASSWORD` в `.env`):
+
+```powershell
+docker compose up -d --build                          # БД и бот; миграции бот применяет сам
+docker compose logs -f bot                            # логи бота
+docker compose run --rm bot python generate_token.py  # вход в Garmin, токены попадут в том
+docker compose down                                   # остановить (данные в томах сохраняются; -v удалит их)
 ```
 
 Перед `alembic revision` БД должна быть на `head`, иначе ошибка «Target database is not up to date». Каждую автомиграцию просматривать глазами. Смену типа колонки с данными писать вручную с `postgresql_using` (autogenerate делает `ALTER ... TYPE` без `USING`, и PostgreSQL его отклоняет).
@@ -131,6 +142,13 @@ python generate_token.py                              # вход в Garmin (сн
 - Также удаляются файл токенов Garmin и незавершённый вход по MFA (`GarminClient.clear_session`) и состояние FSM. Аккаунт в Garmin Connect и история чата не затрагиваются.
 - Удаление берёт блокировку пользователя: при идущей операции отвечает «подождите», чтобы опрос не записал данные удалённому пользователю.
 
+**Docker**
+- Образ содержит только боевые зависимости; `.env`, токены Garmin, тесты и `venv` в него не попадают (`.dockerignore`). Секреты приходят через `env_file: .env` при запуске.
+- В compose `DATABASE_URL` перекрывается адресом контейнера `db`, `GARMIN_TOKENS_DIR` указывает на том `garmin_tokens`. Порт БД наружу не публикуется.
+- БД в контейнере отдельная от локальной PostgreSQL: при переходе на Docker данные нужно перенести (`pg_dump` / `pg_restore`) или начать заново (`/sync`, `/plan`).
+- Не запускать бота в контейнере и локально одновременно с одним `TELEGRAM_BOT_TOKEN`: два опроса Telegram мешают друг другу, а блокировки пользователей работают только внутри одного процесса.
+- На сервере Garmin видит IP сервера: при 429 вход делать через `docker compose run --rm bot python generate_token.py` с другой сети или переносить токены в том.
+
 **Telegram**
 - Только поддерживаемые теги: `b`, `i`, `u`, `s`, `code`, `pre`, `blockquote`, `a`. Любой текст от модели экранировать (`html.escape`).
 - Длинные сообщения резать через `MessageService.chunk_message`.
@@ -158,12 +176,12 @@ python generate_token.py                              # вход в Garmin (сн
 - Этап 3: `coach_service` (VDOT и зоны), поля профиля, тесты.
 - Этап 4: схемы, валидатор, генератор, темпы, пульс и длительность кодом, рендер; `plan_details` в JSONB; `/plan`, `/test_week` и воскресная рассылка на структурных планах; клиент Claude и выбор провайдера.
 - Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI; поллинг активностей с автоматическим разбором новых пробежек; часовые пояса пользователей (`/timezone`, определение по Garmin, рассылка по местному времени); блокировки тяжёлых операций на пользователя.
-- Этап 6: `requirements-dev.txt`, ruff (`pyproject.toml`), исправлены найденные им замечания; CI на GitHub Actions; `/delete_me`; вводные дни до старта плана после `/plan`.
+- Этап 6: `requirements-dev.txt`, ruff (`pyproject.toml`), исправлены найденные им замечания; CI на GitHub Actions; `/delete_me`; вводные дни до старта плана после `/plan`; Docker (образ, compose с PostgreSQL, сборка в CI).
 
 Проверено скриптами на живой модели и локальной БД (запись с откатом): генерация макроплана и недели, сохранение и чтение JSONB, `send_week` для нового, старого и завершённого плана. Живая проверка в Telegram (`/sync`, `/plan`, `/test_week`) ещё не подтверждена.
 
 Дальше:
-- Этап 6: Docker.
+- Этап 7: выгрузка недель в календарь Garmin (обсуждалось, не начато).
 
 ## Известные ограничения
 
