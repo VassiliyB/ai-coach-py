@@ -7,8 +7,10 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from schemas.plan import MacroPlan, WeekPlan, WorkoutType
+from clients.ai_errors import AIResponseFormatError
+from schemas.plan import PHASE_NAMES, MacroPlan, WeekPlan, WorkoutType
 from services import plan_validator as rules
+from services.coach_service import TrainingZones
 from services.plan_validator import format_problems, validate_macro, validate_week
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,7 @@ class LLMClient(Protocol):
         temperature: float = 0.4,
         max_tokens: int = 3000,
         json_mode: bool = False,
+        response_schema: Optional[Type[BaseModel]] = None,
     ) -> str: ...
 
 
@@ -94,6 +97,10 @@ def _load_knowledge() -> str:
         return ""
 
 
+def _phase_names() -> str:
+    return ", ".join(f"{n} — {name.lower()}" for n, name in PHASE_NAMES.items())
+
+
 def _phase_rule(phase_number: int) -> str:
     """Пункт промпта о запрещённых в фазе типах (пустая строка, если запретов нет)."""
     forbidden = rules.PHASE_FORBIDDEN_TYPES.get(phase_number)
@@ -116,10 +123,10 @@ def _limit_line(workout_type: WorkoutType) -> str:
 MACRO_EXAMPLE = json.dumps(
     {
         "phases": [
-            {"number": 1, "name": "Закладка фундамента", "weeks": 1, "focus": "аэробная база"},
-            {"number": 2, "name": "Раннее качество", "weeks": 1, "focus": "экономичность, короткие повторы"},
-            {"number": 3, "name": "Переходное качество", "weeks": 1, "focus": "порог и интервалы"},
-            {"number": 4, "name": "Финальная подводка", "weeks": 1, "focus": "снижение объёма перед стартом"},
+            {"number": 1, "weeks": 1, "focus": "аэробная база"},
+            {"number": 2, "weeks": 1, "focus": "экономичность, короткие повторы"},
+            {"number": 3, "weeks": 1, "focus": "порог и интервалы"},
+            {"number": 4, "weeks": 1, "focus": "снижение объёма перед стартом"},
         ],
         "weekly_km": [30, 33, 36, 25],
         "notes": ["При боли или плохом самочувствии снижай нагрузку"],
@@ -131,13 +138,13 @@ WEEK_EXAMPLE = json.dumps(
     {
         "days": [
             {"day": 1, "type": "rest", "description": "Отдых"},
-            {"day": 2, "type": "threshold", "distance_km": 8, "quality_km": 3, "duration_min": 55,
+            {"day": 2, "type": "threshold", "distance_km": 8, "quality_km": 3,
              "description": "Разминка 2.5 км, 3 км непрерывно в пороговой зоне, заминка 2.5 км"},
-            {"day": 3, "type": "easy", "distance_km": 5, "duration_min": 32, "description": "Лёгкий кросс"},
-            {"day": 4, "type": "easy", "distance_km": 6, "duration_min": 38, "description": "Лёгкий кросс + 4 ускорения по 20 с"},
+            {"day": 3, "type": "easy", "distance_km": 5, "description": "Лёгкий кросс"},
+            {"day": 4, "type": "easy", "distance_km": 6, "description": "Лёгкий кросс + 4 ускорения по 20 с"},
             {"day": 5, "type": "rest", "description": "Отдых"},
-            {"day": 6, "type": "long", "distance_km": 10, "duration_min": 70, "description": "Длительный бег"},
-            {"day": 7, "type": "easy", "distance_km": 7, "duration_min": 44, "description": "Восстановительный кросс"},
+            {"day": 6, "type": "long", "distance_km": 10, "description": "Длительный бег"},
+            {"day": 7, "type": "easy", "distance_km": 7, "description": "Восстановительный кросс"},
         ],
         "note": "Короткий комментарий к неделе",
     },
@@ -154,8 +161,8 @@ class PlanGenerator:
         knowledge_base: Optional[str] = None,
     ) -> None:
         if ai_client is None:
-            from clients.ai_client import AIClient  # ленивый импорт: тестам не нужны ключи и .env
-            ai_client = AIClient()
+            from clients.llm import create_llm_client  # ленивый импорт: тестам не нужны ключи и .env
+            ai_client = create_llm_client()
         if knowledge_base is None:
             knowledge_base = _load_knowledge()
         self.ai = ai_client
@@ -185,15 +192,18 @@ class PlanGenerator:
             "Верни JSON такой структуры (это пример формата, значения подбери сам):\n"
             f"{MACRO_EXAMPLE}\n\n"
             "ТРЕБОВАНИЯ:\n"
-            f"1. Ровно 4 фазы с number 1, 2, 3, 4; сумма weeks равна {int(total_weeks)}. "
-            "Если подготовка короче 4 недель, ранним фазам ставь weeks: 0.\n"
+            f"1. Ровно 4 фазы с number 1, 2, 3, 4 ({_phase_names()}); сумма weeks равна {int(total_weeks)}. "
+            "Названия фаз не указывай. Если подготовка короче 4 недель, ранним фазам ставь weeks: 0.\n"
             f"2. weekly_km содержит ровно {int(total_weeks)} чисел: целевой километраж каждой недели по порядку.\n"
             f"3. Первая неделя близка к текущему объёму атлета. Рост километража не более "
             f"{rules.MAX_WEEKLY_GROWTH:.0%} относительно лучшей из двух предыдущих недель; "
             "каждая 3-я или 4-я неделя разгрузочная (на 20-25% меньше).\n"
-            f"4. Фаза IV — подводка: километраж снижается к старту; последняя неделя не более "
+            "4. Фаза IV — подводка: внутри фазы километраж каждой недели не больше предыдущей; "
+            f"последняя неделя не более "
             f"{rules.TAPER_MAX_SHARE:.0%} от пиковой.\n"
-            "5. focus — 1-2 коротких предложения о задачах фазы; notes — до 5 коротких правил предосторожности."
+            f"5. Самая объёмная неделя плана находится в фазе {' или '.join(map(str, rules.PEAK_PHASES))}. "
+            f"До фазы IV ни одна неделя не ниже {rules.MIN_SHARE_OF_FIRST_WEEK:.0%} от первой недели.\n"
+            "6. focus — 1-2 коротких предложения о задачах фазы; notes — до 5 коротких правил предосторожности."
         )
 
     def _week_prompt(
@@ -204,8 +214,13 @@ class PlanGenerator:
         week_number: int,
         week_start: str,
         week_end: str,
+        zones: Optional[TrainingZones] = None,
     ) -> str:
         phase = macro.phase_for_week(week_number)
+        long_limit = (
+            f", не длиннее {rules.long_run_max_km(zones):g} км ({rules.LONG_MAX_MINUTES} мин в лёгком темпе атлета)"
+            if zones is not None else ""
+        )
         target = target_km_for_week(macro, week_number)
         return (
             f"Составь недельный микроцикл: неделя подготовки №{int(week_number)} из {macro.total_weeks} "
@@ -226,12 +241,13 @@ class PlanGenerator:
             f"{_limit_line(WorkoutType.THRESHOLD)}\n"
             f"{_limit_line(WorkoutType.INTERVAL)}\n"
             f"{_limit_line(WorkoutType.REPETITION)}\n"
-            f"5. Длительный бег (long): не более {rules.LONG_MAX_SHARE:.0%} недельного километража "
-            f"и не более {rules.LONG_MAX_MINUTES} минут; он не короче любой другой тренировки недели.\n"
+            f"5. Длительный бег (long): не более {rules.LONG_MAX_SHARE:.0%} недельного километража{long_limit}; "
+            "он не короче любой другой тренировки недели.\n"
             f"6. Не более {rules.MAX_QUALITY_SESSIONS} качественных тренировок; минимум {rules.MIN_REST_DAYS} день "
             "отдыха (rest) или ОФП (cross).\n"
             "7. Две тяжёлые тренировки подряд (качественная или long) недопустимы: после них лёгкий день или отдых.\n"
-            "8. description — структура тренировки (например, '5 × 1 км, отдых 2 мин трусцой'), без темпов."
+            "8. description — структура тренировки (например, '5 × 1 км, отдых 2 мин трусцой'), без темпов "
+            "и без длительности в минутах: их рассчитает система."
             f"{_phase_rule(phase.number)}"
         )
 
@@ -247,9 +263,16 @@ class PlanGenerator:
     ) -> T:
         problems: List[str] = []
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            raw = await self.ai.generate_response(
-                messages, temperature=temperature, max_tokens=JSON_MAX_TOKENS, json_mode=True,
-            )
+            try:
+                raw = await self.ai.generate_response(
+                    messages, temperature=temperature, max_tokens=JSON_MAX_TOKENS, json_mode=True,
+                    response_schema=model_cls,  # Claude получит схему в структурированный вывод
+                )
+            except AIResponseFormatError as exc:
+                # Ответ обрезан или отклонён Groq: показать модели нечего, повторяем тот же запрос
+                problems = [str(exc)]
+                logger.warning("Попытка %d/%d (%s): непригодный ответ: %s", attempt, MAX_ATTEMPTS, what, exc)
+                continue
             try:
                 obj = model_cls.model_validate(parse_json_object(raw))
             except ValidationError as exc:
@@ -299,18 +322,18 @@ class PlanGenerator:
         week_number: int,
         week_start: str,
         week_end: str,
+        zones: Optional[TrainingZones] = None,
     ) -> WeekPlan:
+        """zones: зоны темпа атлета; по ним код считает потолок длительного бега в км."""
         target = target_km_for_week(macro, week_number)
         phase_number = macro.phase_for_week(week_number).number
+        prompt = self._week_prompt(athlete_profile, target_race, macro, week_number, week_start, week_end, zones)
         messages = [
             {"role": "system", "content": self._system_prompt},
-            {
-                "role": "user",
-                "content": self._week_prompt(athlete_profile, target_race, macro, week_number, week_start, week_end),
-            },
+            {"role": "user", "content": prompt},
         ]
         return await self._generate(
             messages, WeekPlan,
-            lambda w: validate_week(w, target_km=target, phase_number=phase_number),
+            lambda w: validate_week(w, target_km=target, phase_number=phase_number, zones=zones),
             temperature=0.4, what="недельный план",
         )

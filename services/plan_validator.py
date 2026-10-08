@@ -6,6 +6,8 @@
 from typing import Dict, FrozenSet, List, Optional
 
 from schemas.plan import QUALITY_TYPES, MacroPlan, WeekPlan, WorkoutType
+from services.coach_service import TrainingZones
+from services.plan_paces import km_for_minutes
 
 DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 
@@ -25,6 +27,9 @@ MIN_REST_DAYS = 1                 # отдых или ОФП
 TARGET_KM_TOLERANCE = 0.15        # допустимое отклонение от целевого километража недели
 MAX_WEEKLY_GROWTH = 0.10          # рост относительно лучшей из двух предыдущих недель
 TAPER_MAX_SHARE = 0.75            # последняя неделя макроплана не больше этой доли от пиковой
+PEAK_PHASES = (2, 3)              # пик километража приходится на эти фазы, а не на фундамент или подводку
+MIN_SHARE_OF_FIRST_WEEK = 0.70    # вне подводки неделя не ниже этой доли от первой (разгрузка до -25%)
+TAPER_PHASE = 4
 KM_EPS = 0.05
 
 # Типы тренировок, запрещённые в фазе. Фаза I (закладка фундамента) по Дэниелсу: только лёгкий бег,
@@ -34,12 +39,21 @@ PHASE_FORBIDDEN_TYPES: Dict[int, FrozenSet[WorkoutType]] = {
 }
 
 
+def long_run_max_km(zones: TrainingZones) -> float:
+    """Потолок длительного бега в км: LONG_MAX_MINUTES в лёгком темпе атлета."""
+    return round(km_for_minutes(LONG_MAX_MINUTES, zones), 1)
+
+
 def validate_week(
-    week: WeekPlan, target_km: Optional[float] = None, phase_number: Optional[int] = None,
+    week: WeekPlan,
+    target_km: Optional[float] = None,
+    phase_number: Optional[int] = None,
+    zones: Optional[TrainingZones] = None,
 ) -> List[str]:
     """Проверяет недельный микроцикл.
 
-    target_km: плановый километраж недели из макроплана; phase_number: номер фазы (1-4) для правил фазы.
+    target_km: плановый километраж недели из макроплана; phase_number: номер фазы (1-4) для правил фазы;
+    zones: зоны темпа атлета, без них потолок длительного бега по времени не проверяется.
     """
     problems: List[str] = []
     total = week.total_km
@@ -75,9 +89,10 @@ def validate_week(
                 f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км больше {LONG_MAX_SHARE:.0%} "
                 f"недельного километража ({total:g} км)"
             )
-        if (d.duration_min or 0) > LONG_MAX_MINUTES:
+        if zones is not None and d.distance_km > long_run_max_km(zones) + KM_EPS:
             problems.append(
-                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.duration_min} мин дольше потолка {LONG_MAX_MINUTES} мин"
+                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км дольше потолка {LONG_MAX_MINUTES} мин "
+                f"(в лёгком темпе атлета это не более {long_run_max_km(zones):g} км)"
             )
         longer = [o for o in week.days if o.type != WorkoutType.LONG and (o.distance_km or 0) > d.distance_km + KM_EPS]
         if longer:
@@ -143,6 +158,34 @@ def validate_macro(macro: MacroPlan, total_weeks: int) -> List[str]:
             f"последняя неделя {km[-1]:g} км: перед стартом объём должен снижаться до "
             f"{TAPER_MAX_SHARE:.0%} от пика ({peak:g} км) или ниже, то есть не более {TAPER_MAX_SHARE * peak:.1f} км"
         )
+
+    phase_of_week = macro.week_phase_numbers()  # схема гарантирует ту же длину, что у weekly_km
+
+    # Пик объёма в фазах развития, а не в начале плана и не в подводке
+    peak_weeks = [v for v, ph in zip(km, phase_of_week) if ph in PEAK_PHASES]
+    if peak_weeks and max(peak_weeks) + KM_EPS < peak:
+        peak_week = km.index(peak) + 1
+        problems.append(
+            f"пик километража {peak:g} км приходится на неделю {peak_week} (фаза {phase_of_week[peak_week - 1]}); "
+            f"самая объёмная неделя должна быть в фазе {' или '.join(map(str, PEAK_PHASES))}"
+        )
+
+    # Объём не проваливается ниже текущего уровня атлета до начала подводки
+    floor = MIN_SHARE_OF_FIRST_WEEK * km[0]
+    for i, (v, ph) in enumerate(zip(km, phase_of_week)):
+        if ph != TAPER_PHASE and v + KM_EPS < floor:
+            problems.append(
+                f"неделя {i + 1}: {v:g} км, ниже {MIN_SHARE_OF_FIRST_WEEK:.0%} от первой недели "
+                f"({km[0]:g} км, минимум {floor:.1f} км); снижать объём так сильно можно только в фазе подводки"
+            )
+
+    # В подводке объём только снижается (или держится): рост внутри фазы IV съедает свежесть к старту
+    for i in range(1, len(km)):
+        if phase_of_week[i] == TAPER_PHASE and phase_of_week[i - 1] == TAPER_PHASE and km[i] > km[i - 1] + KM_EPS:
+            problems.append(
+                f"неделя {i + 1}: {km[i]:g} км больше предыдущей ({km[i - 1]:g} км) внутри фазы подводки; "
+                "в фазе IV километраж не растёт"
+            )
 
     return problems
 

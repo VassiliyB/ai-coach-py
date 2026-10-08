@@ -1,9 +1,13 @@
 import asyncio
 import json
+import math
 
 import pytest
 
+from clients.ai_errors import AIClientError, AIResponseFormatError
 from schemas.plan import MacroPlan
+from services.coach_service import calculate_zones
+from services.plan_validator import long_run_max_km
 from services.plan_generator import (
     MAX_ATTEMPTS,
     PlanGenerationError,
@@ -19,9 +23,14 @@ class FakeAI:
         self.responses = list(responses)
         self.calls = []
 
-    async def generate_response(self, messages, model=None, temperature=0.4, max_tokens=3000, json_mode=False):
-        self.calls.append({"messages": messages, "json_mode": json_mode})
-        return self.responses.pop(0)
+    async def generate_response(
+        self, messages, model=None, temperature=0.4, max_tokens=3000, json_mode=False, response_schema=None,
+    ):
+        self.calls.append({"messages": messages, "json_mode": json_mode, "response_schema": response_schema})
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def macro_data():
@@ -82,6 +91,7 @@ def test_macro_first_try():
     assert isinstance(macro, MacroPlan)
     assert len(ai.calls) == 1
     assert ai.calls[0]["json_mode"] is True
+    assert ai.calls[0]["response_schema"] is MacroPlan   # для структурированного вывода Claude
 
 
 def test_macro_retry_on_validator_problems():
@@ -112,6 +122,30 @@ def test_retry_on_invalid_json():
     macro = asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
     assert macro.total_weeks == 12
     assert "JSON" in ai.calls[1]["messages"][-1]["content"]
+
+
+def test_retry_after_unusable_response_repeats_same_request():
+    # Groq отклонил JSON (json_validate_failed) или ответ обрезан: повторяем тот же запрос без замечаний
+    gen, ai = generator([AIResponseFormatError("ИИ вернул некорректный JSON"), dumps(macro_data())])
+    macro = asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert macro.total_weeks == 12
+    assert len(ai.calls) == 2
+    assert ai.calls[1]["messages"] == ai.calls[0]["messages"]
+
+
+def test_unusable_responses_exhaust_attempts():
+    gen, ai = generator([AIResponseFormatError("обрезан по длине")] * MAX_ATTEMPTS)
+    with pytest.raises(PlanGenerationError) as exc_info:
+        asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert len(ai.calls) == MAX_ATTEMPTS
+    assert exc_info.value.problems == ["обрезан по длине"]
+
+
+def test_other_ai_errors_are_not_retried():
+    gen, ai = generator([AIClientError("Сервер перегружен запросами"), dumps(macro_data())])
+    with pytest.raises(AIClientError):
+        asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    assert len(ai.calls) == 1
 
 
 def test_macro_total_weeks_mismatch_triggers_retry():
@@ -169,6 +203,31 @@ def test_week_in_phase_one_rejects_quality_and_retries():
     assert "недопустима в фазе 1" in ai.calls[1]["messages"][-1]["content"]
 
 
+def test_week_long_run_cap_from_zones():
+    # медленному бегуну (VDOT 30) 150 мин хватает примерно на 19 км: длиннее отклоняется, в промпте потолок в км
+    zones = calculate_zones(30)
+    cap = long_run_max_km(zones)
+    macro = MacroPlan.model_validate(macro_data())
+    too_long = good_week_data()
+    too_long["days"] = [
+        {"day": 1, "type": "rest"}, {"day": 2, "type": "easy", "distance_km": 14},
+        {"day": 3, "type": "easy", "distance_km": 14}, {"day": 4, "type": "easy", "distance_km": 14},
+        {"day": 5, "type": "rest"}, {"day": 6, "type": "long", "distance_km": math.ceil(cap) + 1},
+        {"day": 7, "type": "easy", "distance_km": 14},
+    ]
+    gen, ai = generator([dumps(too_long), dumps(good_week_data())])
+    asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", zones=zones))
+    assert f"не длиннее {cap:g} км (150 мин в лёгком темпе атлета)" in ai.calls[0]["messages"][-1]["content"]
+    assert "дольше потолка 150 мин" in ai.calls[1]["messages"][-1]["content"]
+
+
+def test_week_prompt_without_zones_has_no_time_cap():
+    macro = MacroPlan.model_validate(macro_data())
+    gen, ai = generator([dumps(good_week_data())])
+    asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027"))
+    assert "мин в лёгком темпе" not in ai.calls[0]["messages"][-1]["content"]
+
+
 def test_phase_rule_only_in_phase_one_prompt():
     macro = MacroPlan.model_validate(macro_data())
     gen, ai = generator([dumps(good_week_data())])
@@ -179,4 +238,10 @@ def test_phase_rule_only_in_phase_one_prompt():
 def test_macro_prompt_mentions_taper_limit():
     gen, ai = generator([dumps(macro_data())])
     asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
-    assert "75% от пиковой" in ai.calls[0]["messages"][-1]["content"]
+    prompt = ai.calls[0]["messages"][-1]["content"]
+    assert "75% от пиковой" in prompt
+    assert "не больше предыдущей" in prompt
+    assert "в фазе 2 или 3" in prompt
+    assert "ниже 70% от первой недели" in prompt
+    assert "Названия фаз не указывай" in prompt
+    assert '"name"' not in prompt

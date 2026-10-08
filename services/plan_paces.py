@@ -36,6 +36,34 @@ def pace_text(day: PlannedDay, zones: Optional[TrainingZones]) -> str:
     return str(pace) if pace else ""
 
 
+DURATION_ROUND_MIN = 5   # оценка длительности приблизительная: округляем до 5 минут
+
+
+def _mid(pace: PaceRange) -> float:
+    return (pace.fast + pace.slow) / 2
+
+
+def km_for_minutes(minutes: float, zones: TrainingZones) -> float:
+    """Сколько км пробегается за minutes в середине лёгкого диапазона (зона E)."""
+    return minutes * 60 / _mid(zones.easy)
+
+
+def estimate_duration_min(day: PlannedDay, zones: Optional[TrainingZones]) -> Optional[int]:
+    """Оценка длительности тренировки в минутах, кратная 5. None без зон или для дня без бега.
+
+    Рабочая часть идёт в темпе своей зоны, остальная дистанция (разминка, заминка, восстановление
+    между отрезками) в середине лёгкого диапазона.
+    """
+    if zones is None or not day.distance_km:
+        return None
+    easy = _mid(zones.easy)
+    work_km = day.quality_km or 0.0
+    zone_pace = pace_for_zone(day.zone, zones)
+    work_pace = _mid(zone_pace) if zone_pace else easy
+    minutes = (work_km * work_pace + (day.distance_km - work_km) * easy) / 60
+    return max(DURATION_ROUND_MIN, round(minutes / DURATION_ROUND_MIN) * DURATION_ROUND_MIN)
+
+
 def hr_range_for_zone(zone: Optional[str], max_hr: Optional[int]) -> Optional[Tuple[int, int]]:
     if not zone or not max_hr or max_hr <= 0:
         return None

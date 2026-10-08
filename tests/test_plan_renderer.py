@@ -70,6 +70,12 @@ def test_easy_day_uses_easy_pace_range():
     assert f"<code>{ZONES.easy}</code>" in render(make_week())
 
 
+def test_duration_is_estimated_by_code():
+    text = render(make_week())
+    assert "⏱ ≈" in text
+    assert "⏱" not in render(make_week(), zones=None)   # без VDOT длительность не оценить
+
+
 def test_rest_and_cross_days_have_no_pace():
     text = render(make_week())
     rest_block = text.split("\n\n")[1]          # первый день после шапки
@@ -136,8 +142,8 @@ def test_macro_skips_zero_week_phases():
         "weekly_km": [30, 20],
     })
     text = render_macro(macro, "10 км")
-    assert "Фундамент" not in text
-    assert "Фаза 3" in text and "(нед. 1)" in text
+    assert "Закладка фундамента" not in text
+    assert "Фаза 3 · Переходное качество" in text and "(нед. 1)" in text
     assert "Фаза 4" in text and "(нед. 2)" in text
 
 

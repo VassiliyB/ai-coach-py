@@ -9,16 +9,17 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.keyboards import get_target_distances_keyboard
 from bot.states import PlanCreationStates
+from clients.ai_client import AIClientError
 from database import async_session_maker
-from services.ai_coach_service import AICoachService
-from services.coach_service import build_profile_context
+from services.coach_service import build_profile_context, zones_for_profile
 from services.message_service import MessageService
-from services.scheduler_service import TrainingSchedulerService
+from services.plan_generator import PlanGenerationError, PlanGenerator
+from services.plan_renderer import render_macro
+from services.scheduler_service import TrainingSchedulerService, WeekStatus
 from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
 router = Router()
-ai_coach = AICoachService()
 
 DISTANCE_NAMES = {
     "dist_5km": "5 км",
@@ -66,8 +67,8 @@ async def handle_distance_selected(callback: CallbackQuery, state: FSMContext) -
 
 
 @router.message(PlanCreationStates.waiting_for_date)
-async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
-    """Валидация даты, генерация плана через ИИ и запись в БД."""
+async def handle_race_date_entered(message: Message, state: FSMContext, plan_generator: PlanGenerator) -> None:
+    """Валидация даты, генерация структурного макроплана, запись в БД и показ пользователю."""
     date_text = (message.text or "").strip()
     try:
         race_date = datetime.strptime(date_text, "%d.%m.%Y").date()
@@ -92,7 +93,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
 
     status_msg = await message.answer(
         f"🧠 <b>Тренер рассчитывает 4-фазный план ({total_weeks} нед.)...</b>\n"
-        "Это займет несколько секунд.",
+        "Это может занять до минуты.",
         parse_mode="HTML",
     )
 
@@ -102,10 +103,11 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
             user = await UserService.get_or_create_user(session, message.chat.id)
             profile = await UserService.get_athlete_profile(session, user.id)
             user_id = user.id
-            profile_dict = build_profile_context(profile)  # текст паспорта + готовые зоны темпа
+            profile_dict = build_profile_context(profile)
+            zones = zones_for_profile(profile)
 
-        # 2. Генерация плана через спортивный ИИ
-        plan_text = await ai_coach.generate_macrocycle_plan(
+        # 2. Модель выбирает фазы и километраж; схема и правила проверяются, при замечаниях повтор
+        macro = await plan_generator.generate_macro(
             athlete_profile=profile_dict,
             target_race=target_race,
             race_date=race_date.isoformat(),
@@ -120,26 +122,36 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
                 target_race=target_race,
                 race_date=race_date,
                 total_weeks=total_weeks,
-                plan=plan_text,
+                plan=macro,
             )
 
         await status_msg.delete()
 
-        # Безопасная нарезка ответа (лимит Telegram 4096 символов)
-        for chunk in MessageService.chunk_message(plan_text):
+        # 4. Текст собирает код: зоны темпа из VDOT, текст модели экранирован
+        text = render_macro(macro, target_race, race_date=race_date, zones=zones)
+        for chunk in MessageService.chunk_message(text):
             await message.answer(chunk, parse_mode="HTML")
 
+    except PlanGenerationError as exc:
+        logger.warning("Макроплан не прошёл проверки (chat_id=%s): %s", message.chat.id, exc.problems)
+        await status_msg.edit_text(
+            "❌ Не получилось составить план, который проходит проверку по правилам тренировок. "
+            "Попробуйте ещё раз через /plan."
+        )
+    except AIClientError as exc:
+        # Текст ошибки клиента уже адресован пользователю (лимит запросов, сеть и т.п.)
+        await status_msg.edit_text(f"❌ {exc}")
     except Exception as exc:
         logger.exception("Ошибка при генерации макроплана: %s", exc)
         await status_msg.edit_text("❌ Произошла ошибка при составлении плана. Попробуйте повторить запрос.")
 
 
 @router.message(Command("test_week"))
-async def handle_test_week(message: Message) -> None:
+async def handle_test_week(message: Message, scheduler_service: TrainingSchedulerService) -> None:
     """Ручной запуск генерации микроцикла на неделю (отладочная команда)."""
     chat_id = message.chat.id
     status_msg = await message.answer(
-        "🧠 <b>Генерирую расписание на неделю по правилу 80/20...</b>", parse_mode="HTML"
+        "🧠 <b>Генерирую расписание на следующую неделю по правилу 80/20...</b>", parse_mode="HTML"
     )
 
     try:
@@ -155,18 +167,25 @@ async def handle_test_week(message: Message) -> None:
             )
             return
 
-        scheduler_service = TrainingSchedulerService(bot=message.bot, ai_coach=ai_coach)
-        success = await scheduler_service.generate_and_send_microcycle_for_user(
-            user=user,
-            plan=active_plan,
-            profile=profile,
-        )
+        status = await scheduler_service.send_week(user=user, plan=active_plan, profile=profile)
 
-        if success:
-            await status_msg.delete()
+        if status == WeekStatus.FINISHED:
+            await status_msg.edit_text(
+                "🏁 Забег по текущему плану уже прошёл. Создайте новый план через <code>/plan</code>.",
+                parse_mode="HTML",
+            )
         else:
-            await status_msg.edit_text("❌ Не удалось сформировать недельный план. Проверьте логи.")
+            # Расписание или подсказка про старый формат плана уже отправлены
+            await status_msg.delete()
 
+    except PlanGenerationError as exc:
+        logger.warning("Неделя не прошла проверки (chat_id=%s): %s", chat_id, exc.problems)
+        await status_msg.edit_text(
+            "❌ Не получилось составить неделю, которая проходит проверку по правилам тренировок. "
+            "Попробуйте ещё раз через /test_week."
+        )
+    except AIClientError as exc:
+        await status_msg.edit_text(f"❌ {exc}")
     except Exception as exc:
         logger.exception("Ошибка при вызове /test_week: %s", exc)
         await status_msg.edit_text("❌ Произошла ошибка при генерации расписания.")

@@ -2,8 +2,7 @@
 """Формат поля plan_details (JSONB). Чистые функции, без I/O.
 
 Структурный план хранится как результат model_dump схемы (MacroPlan или WeekPlan).
-Старые текстовые планы хранятся как {"legacy_text": "..."}: так их перенесла миграция,
-и так их пишет текстовая генерация, пока /plan и планировщик не переведены на структурные планы.
+Старые текстовые планы миграция перенесла как {"legacy_text": "..."}: структурного разбора у них нет.
 """
 from typing import Any, Dict, Optional, Type, TypeVar, Union
 
@@ -16,23 +15,8 @@ LEGACY_KEY = "legacy_text"
 T = TypeVar("T", bound=BaseModel)
 
 
-def wrap_legacy_text(text: str) -> Dict[str, Any]:
-    """Текстовый план -> значение для plan_details."""
-    return {LEGACY_KEY: text or ""}
-
-
-def legacy_text(details: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Текст старого плана или None, если план структурный (или пустой)."""
-    if not isinstance(details, dict):
-        return None
-    text = details.get(LEGACY_KEY)
-    return text if isinstance(text, str) else None
-
-
-def plan_to_details(plan: Union[MacroPlan, WeekPlan, str]) -> Dict[str, Any]:
-    """План -> значение для plan_details. Строка сохраняется в старом формате (legacy_text)."""
-    if isinstance(plan, str):
-        return wrap_legacy_text(plan)
+def plan_to_details(plan: Union[MacroPlan, WeekPlan]) -> Dict[str, Any]:
+    """План -> значение для plan_details."""
     return plan.model_dump(mode="json")
 
 

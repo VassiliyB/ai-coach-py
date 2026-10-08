@@ -1,18 +1,18 @@
 # clients/ai_client.py
+import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 
+from clients.ai_errors import AIClientError, AIResponseFormatError
+from clients.rate_limit import RATE_LIMIT_RETRIES, retry_delay
 from config import settings
 
+__all__ = ["AIClient", "AIClientError", "AIResponseFormatError"]
+
 logger = logging.getLogger(__name__)
-
-
-class AIClientError(Exception):
-    """Базовое исключение для ошибок вызова AI."""
-    pass
 
 
 class AIClient:
@@ -33,6 +33,25 @@ class AIClient:
             base_url=base_url or settings.GROQ_BASE_URL,
         )
 
+    async def _create_with_rate_limit_retry(self, **params: Any) -> Any:
+        """Запрос к модели; при 429 ждёт столько, сколько просит Groq, и повторяет.
+
+        Бесплатный тариф ограничивает токены в минуту (8000), а один JSON-запрос занимает около 5000:
+        повторные попытки генератора плана упираются в лимит, хотя ждать нужно несколько секунд.
+        """
+        for attempt in range(1, RATE_LIMIT_RETRIES + 2):
+            try:
+                # noinspection PyTypeChecker
+                return await self.client.chat.completions.create(**params)
+            except RateLimitError as exc:
+                delay = retry_delay(exc.response.headers, exc.message) if attempt <= RATE_LIMIT_RETRIES else None
+                if delay is None:
+                    raise
+                logger.warning(
+                    "Лимит запросов Groq (429), повтор %d/%d через %.1f с", attempt, RATE_LIMIT_RETRIES, delay,
+                )
+                await asyncio.sleep(delay)
+
     async def generate_response(
         self,
         messages: List[Dict[str, str]],
@@ -40,11 +59,13 @@ class AIClient:
         temperature: float = 0.4,
         max_tokens: int = 3000,
         json_mode: bool = False,
+        response_schema: Optional[Type[BaseModel]] = None,
     ) -> str:
         """Отправляет контекст диалога в LLM и возвращает сгенерированный текст.
 
         json_mode=True включает режим JSON-объекта (в промпте должно встречаться слово JSON).
         В этом режиме обрезанный по длине ответ считается ошибкой: оборванный JSON бесполезен.
+        response_schema Groq не поддерживает: схему описывает промпт, проверяет генератор.
         """
         target_model = model or self.default_model
         kwargs: Dict[str, Any] = {}
@@ -56,8 +77,7 @@ class AIClient:
                 "Отправка запроса в Groq (модель: %s, сообщений: %d, json: %s)",
                 target_model, len(messages), json_mode,
             )
-            # noinspection PyTypeChecker
-            response = await self.client.chat.completions.create(
+            response = await self._create_with_rate_limit_retry(
                 model=target_model,
                 messages=messages,
                 temperature=temperature,
@@ -66,19 +86,23 @@ class AIClient:
             )
             choice = response.choices[0]
             if json_mode and choice.finish_reason == "length":
-                raise AIClientError("Ответ ИИ оказался обрезан по длине. Попробуйте ещё раз.")
+                raise AIResponseFormatError("Ответ ИИ оказался обрезан по длине. Попробуйте ещё раз.")
             return choice.message.content or ""
         except AIClientError:
             raise
         except RateLimitError as exc:
             logger.error("Превышен лимит запросов к Groq (TPM/RPM): %s", exc)
-            raise AIClientError("Сервер перегружен запросами. Пожалуйста, подождите минуту.") from exc
+            raise AIClientError("Сервер ИИ перегружен запросами. Попробуйте позже.") from exc
         except APIConnectionError as exc:
             logger.error("Сетевая ошибка при обращении к Groq API: %s", exc)
             raise AIClientError("Не удалось связаться с сервером ИИ. Проверьте сеть.") from exc
         except APIStatusError as exc:
+            if json_mode and exc.status_code == 400 and getattr(exc, "code", None) == "json_validate_failed":
+                logger.warning("Groq отклонил ответ модели: некорректный JSON")
+                raise AIResponseFormatError("ИИ вернул некорректный JSON. Попробуйте ещё раз.") from exc
             logger.error("Ошибка Groq API HTTP %s: %s", exc.status_code, exc.message)
-            raise AIClientError(f"Ошибка ИИ-сервиса: {exc.message}") from exc
+            # Текст ошибки API пользователю не показываем: он на английском и с технической выдачей
+            raise AIClientError(f"Ошибка ИИ-сервиса (код {exc.status_code}). Попробуйте позже.") from exc
         except Exception as exc:
             logger.exception("Непредвиденная ошибка при запросе к AI: %s", exc)
             raise AIClientError("Произошла непредвиденная ошибка при генерации ответа.") from exc

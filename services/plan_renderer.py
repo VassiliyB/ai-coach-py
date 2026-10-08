@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from schemas.plan import MacroPlan, Phase, PlannedDay, WeekPlan, WorkoutType
 from services.coach_service import TrainingZones
-from services.plan_paces import hr_text, pace_text
+from services.plan_paces import estimate_duration_min, hr_text, pace_text
 
 DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 SEP = " · "
@@ -64,8 +64,9 @@ def _render_day(day: PlannedDay, zones: Optional[TrainingZones], max_hr: Optiona
     lines = [head]
 
     details: List[str] = []
-    if day.duration_min:
-        details.append(f"⏱ {day.duration_min} мин")
+    duration = estimate_duration_min(day, zones)
+    if duration:
+        details.append(f"⏱ ≈{duration} мин")
     pace = pace_text(day, zones)
     if pace:
         suffix = " (рабочая часть)" if day.quality_km else ""

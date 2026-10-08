@@ -31,8 +31,8 @@ async def main() -> None:
     print("  Километраж по неделям:", macro.weekly_km)
 
     print("\nГенерация недели №1...")
-    week = await gen.generate_week(PROFILE, RACE, macro, 1, "01.03.2027", "07.03.2027")
     zones = calculate_zones(VDOT)
+    week = await gen.generate_week(PROFILE, RACE, macro, 1, "01.03.2027", "07.03.2027", zones=zones)
     for d in week.days:
         print(f"  {d.day} | {d.type.value:<10} | {d.distance_km or '-':>5} км | "
               f"зона {d.zone or '-'} | {pace_text(d, zones) or '-':<16} | {d.description}")

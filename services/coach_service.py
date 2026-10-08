@@ -110,12 +110,20 @@ def format_zones(zones: TrainingZones) -> str:
     )
 
 
+def zones_for_profile(profile: Optional[Any]) -> Optional[TrainingZones]:
+    """Зоны темпа по VDOT из профиля. None, если профиля нет или VDOT не рассчитан (нужен /sync)."""
+    vdot = getattr(profile, "vdot", None)
+    if not vdot or not (MIN_VDOT <= vdot <= MAX_VDOT):
+        return None
+    return calculate_zones(vdot)
+
+
 def build_profile_context(profile: Optional[Any]) -> Dict[str, Any]:
     """Профиль из БД -> словарь для промптов (текст паспорта + готовые зоны)."""
     if profile is None:
         return {}
     ctx: Dict[str, Any] = {"summary_text": profile.raw_summary_text}
-    vdot = getattr(profile, "vdot", None)
-    if vdot and MIN_VDOT <= vdot <= MAX_VDOT:
-        ctx["zones_text"] = format_zones(calculate_zones(vdot))
+    zones = zones_for_profile(profile)
+    if zones is not None:
+        ctx["zones_text"] = format_zones(zones)
     return ctx

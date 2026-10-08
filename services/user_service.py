@@ -2,7 +2,7 @@
 """Тонкий фасад над репозиториями: управляет транзакциями (commit), логики здесь нет."""
 import logging
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,9 +45,8 @@ class UserService:
     @staticmethod
     async def save_training_plan(
         session: AsyncSession, user_id: int, target_race: str,
-        race_date: date, total_weeks: int, plan: Union[MacroPlan, str],
+        race_date: date, total_weeks: int, plan: MacroPlan,
     ) -> TrainingPlan:
-        """Строка сохраняется как старый текстовый план (до перевода /plan на MacroPlan)."""
         saved = await PlanRepository(session).create_active(
             user_id, target_race, race_date, total_weeks, plan_to_details(plan)
         )
@@ -67,9 +66,8 @@ class UserService:
     @staticmethod
     async def save_weekly_plan(
         session: AsyncSession, user_id: int, training_plan_id: int,
-        week_start: date, week_end: date, plan: Union[WeekPlan, str],
+        week_start: date, week_end: date, plan: WeekPlan,
     ) -> WeeklyPlan:
-        """Строка сохраняется как старый текстовый план (до перевода планировщика на WeekPlan)."""
         weekly = await PlanRepository(session).upsert_weekly(
             user_id, training_plan_id, week_start, week_end, plan_to_details(plan)
         )

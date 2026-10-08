@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from schemas.plan import MacroPlan, WeekPlan, WorkoutType
+from schemas.plan import PHASE_NAMES, MacroPlan, WeekPlan, WorkoutType
 
 
 def day(n, type_, distance=None, quality=None, **extra):
@@ -170,3 +170,17 @@ def test_zero_week_phase_is_allowed_for_short_plans():
     macro = MacroPlan.model_validate(data)
     assert macro.total_weeks == 2
     assert macro.phase_for_week(1).number == 3
+    assert macro.week_phase_numbers() == [3, 4]
+
+
+def test_phase_names_come_from_code():
+    data = valid_macro()
+    data["phases"][3]["name"] = "Тaper"          # латиница вперемешку с кириллицей, как у модели
+    del data["phases"][0]["name"]                # название можно не передавать
+    macro = MacroPlan.model_validate(data)
+    assert [p.name for p in macro.phases] == [PHASE_NAMES[n] for n in (1, 2, 3, 4)]
+
+
+def test_week_phase_numbers():
+    macro = MacroPlan.model_validate(valid_macro())   # фазы по 3, 4, 4, 1 недели
+    assert macro.week_phase_numbers() == [1] * 3 + [2] * 4 + [3] * 4 + [4]

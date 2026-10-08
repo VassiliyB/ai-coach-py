@@ -1,5 +1,10 @@
+import math
+
 from schemas.plan import MacroPlan, WeekPlan
-from services.plan_validator import format_problems, validate_macro, validate_week
+from services.coach_service import calculate_zones
+from services.plan_validator import (
+    LONG_MAX_MINUTES, format_problems, long_run_max_km, validate_macro, validate_week,
+)
 
 
 def day(n, type_, distance=None, quality=None, **extra):
@@ -91,17 +96,39 @@ def test_long_run_share_too_high():
     assert has(validate_week(w), "длительный бег")
 
 
-def test_long_run_too_many_minutes():
-    days = [
+def long_week(long_km):
+    # лёгкие дни подобраны так, чтобы длительный укладывался в 30% недели и был самым длинным
+    easy_km = math.ceil(long_km * 0.6)
+    return week([
         day(1, "rest"),
-        day(2, "threshold", 8, quality=3),
-        day(3, "easy", 5),
-        day(4, "easy", 6),
+        day(2, "easy", easy_km),
+        day(3, "easy", easy_km),
+        day(4, "easy", easy_km),
         day(5, "rest"),
-        day(6, "long", 10, duration_min=160),
-        day(7, "easy", 7),
-    ]
-    assert has(validate_week(week(days)), "мин")
+        day(6, "long", long_km),
+        day(7, "easy", easy_km),
+    ])
+
+
+def test_long_run_over_time_cap_for_slow_runner():
+    zones = calculate_zones(30)
+    cap = long_run_max_km(zones)            # 150 мин в лёгком темпе медленного бегуна
+    problems = validate_week(long_week(math.ceil(cap) + 1), zones=zones)
+    assert has(problems, f"дольше потолка {LONG_MAX_MINUTES} мин")
+
+
+def test_long_run_within_time_cap():
+    zones = calculate_zones(30)
+    assert validate_week(long_week(math.floor(long_run_max_km(zones))), zones=zones) == []
+
+
+def test_long_run_time_cap_needs_zones():
+    # без VDOT темп неизвестен: потолок по времени не проверяется
+    assert validate_week(long_week(30)) == []
+
+
+def test_faster_runner_has_longer_cap():
+    assert long_run_max_km(calculate_zones(55)) > long_run_max_km(calculate_zones(35))
 
 
 def test_no_rest_day():
@@ -187,6 +214,66 @@ def test_macro_taper_on_boundary_is_ok():
     data["weekly_km"][-1] = 34.5             # ровно 75% от пика 46
     macro = MacroPlan.model_validate(data)
     assert validate_macro(macro, total_weeks=12) == []
+
+
+def macro_with(weeks, km):
+    data = macro_data()
+    for phase, n in zip(data["phases"], weeks):
+        phase["weeks"] = n
+    data["weekly_km"] = km
+    return MacroPlan.model_validate(data)
+
+
+def test_macro_peak_in_base_phase_and_volume_collapse():
+    # живой прогон: пик на 2-й неделе, затем объём проваливается ниже текущего уровня атлета
+    macro = macro_with([3, 3, 3, 3], [38, 41, 32, 24, 35, 28, 22, 30, 24, 19, 18, 14])
+    problems = validate_macro(macro, total_weeks=12)
+    assert has(problems, "пик километража 41 км приходится на неделю 2 (фаза 1)")
+    assert has(problems, "неделя 4: 24 км, ниже 70%")
+    assert has(problems, "неделя 7: 22 км")
+    assert not has(problems, "неделя 10")      # фаза подводки: снижение разрешено
+
+
+def test_macro_peak_in_taper_phase():
+    macro = macro_with([3, 3, 3, 3], [30, 32, 26, 33, 35, 28, 36, 38, 30, 40, 36, 28])
+    assert has(validate_macro(macro, total_weeks=12), "приходится на неделю 10 (фаза 4)")
+
+
+def test_macro_peak_tie_with_base_phase_is_ok():
+    # атлет держит высокий текущий объём: пик в фазе I не выше пика фаз II-III
+    macro = macro_with([3, 4, 4, 1], [40, 40, 32, 36, 39, 40, 32, 40, 40, 32, 30, 28])
+    assert validate_macro(macro, total_weeks=12) == []
+
+
+def test_macro_low_volume_allowed_in_taper():
+    data = macro_data()
+    data["weekly_km"][-1] = 20               # ниже 70% первой недели (21), но это фаза IV
+    macro = MacroPlan.model_validate(data)
+    assert validate_macro(macro, total_weeks=12) == []
+
+
+def test_macro_volume_grows_inside_taper():
+    # живой прогон: фаза IV 38 -> 40 -> 30, подводка фактически только в последнюю неделю
+    macro = macro_with([2, 4, 3, 3], [38, 40, 32, 42, 46, 37, 40, 44, 35, 38, 40, 30])
+    problems = validate_macro(macro, total_weeks=12)
+    assert has(problems, "неделя 11: 40 км больше предыдущей (38 км) внутри фазы подводки")
+    assert len(problems) == 1
+
+
+def test_macro_taper_entry_after_deload_is_ok():
+    # первая неделя подводки (38) выше разгрузочной недели фазы III (35): переход не проверяется
+    macro = macro_with([2, 4, 3, 3], [38, 40, 32, 42, 46, 37, 40, 44, 35, 38, 34, 30])
+    assert validate_macro(macro, total_weeks=12) == []
+
+
+def test_macro_flat_taper_is_ok():
+    macro = macro_with([3, 3, 3, 3], [30, 32, 26, 33, 35, 28, 36, 38, 30, 28, 28, 25])
+    assert validate_macro(macro, total_weeks=12) == []
+
+
+def test_macro_short_plan_without_peak_phases():
+    macro = macro_with([1, 0, 0, 1], [30, 20])
+    assert validate_macro(macro, total_weeks=2) == []
 
 
 # ---------- длительный бег и правила фазы ----------

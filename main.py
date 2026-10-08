@@ -7,9 +7,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.handlers import analyze, plan, start, sync
 from clients.garmin import GarminClient
+from clients.llm import create_llm_client
 from config import settings
 from database import engine, init_models
 from services.ai_coach_service import AICoachService
+from services.plan_generator import PlanGenerator
 from services.scheduler_service import TrainingSchedulerService
 
 logging.basicConfig(
@@ -29,15 +31,19 @@ async def main() -> None:
     # 2. Единые экземпляры сервисов (создаются один раз на всё приложение)
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN.get_secret_value())
     garmin_client = GarminClient()
-    ai_coach = AICoachService()
-    scheduler_service = TrainingSchedulerService(bot=bot, ai_coach=ai_coach)
+    ai_client = create_llm_client()  # один клиент (Groq или Claude) на текстовые ответы и планы
+    logger.info("Провайдер LLM: %s", settings.LLM_PROVIDER)
+    ai_coach = AICoachService(ai_client=ai_client)
+    plan_generator = PlanGenerator(ai_client=ai_client)
+    scheduler_service = TrainingSchedulerService(bot=bot, plan_generator=plan_generator)
 
     # 3. Диспетчер: именованные аргументы становятся зависимостями хендлеров (DI).
-    #    Имя аргумента = имя параметра в хендлере (garmin, ai_coach, scheduler_service).
+    #    Имя аргумента = имя параметра в хендлере (garmin, ai_coach, plan_generator, scheduler_service).
     dp = Dispatcher(
         storage=MemoryStorage(),
         garmin=garmin_client,
         ai_coach=ai_coach,
+        plan_generator=plan_generator,
         scheduler_service=scheduler_service,
     )
 

@@ -9,15 +9,8 @@ from services.message_service import MessageService
 
 logger = logging.getLogger(__name__)
 
-# Сколько символов макроплана передавать в промпт недели
-MACRO_CONTEXT_CHARS = 6000
 NO_DATA = "Нет данных"
 NO_ZONES = "Зоны темпа не рассчитаны (нет VDOT: атлету нужно выполнить /sync)."
-
-ZONES_RULE = (
-    "Используй ТОЛЬКО зоны темпа из блока «РАССЧИТАННЫЕ ЗОНЫ ТЕМПА» выше: они посчитаны кодом по формулам "
-    "Дэниелса. Не пересчитывай их и не придумывай другие темпы."
-)
 
 
 def _clean(value: Any, max_len: int = 200) -> str:
@@ -101,65 +94,6 @@ class AICoachService:
         return MessageService.sanitize_telegram_html(raw_response)
 
     # ---------------- Публичные методы ----------------
-
-    async def generate_macrocycle_plan(
-        self,
-        athlete_profile: Dict[str, Any],
-        target_race: str,
-        race_date: str,
-        total_weeks: int,
-    ) -> str:
-        """Стратегический макроцикл подготовки по 4 фазам Дэниелса."""
-        weeks = int(total_weeks)
-        user_prompt = (
-            f"Сформируй макроцикл подготовки к забегу: {_clean(target_race, 100)}.\n"
-            f"Дата забега: {_clean(race_date, 20)} (недель на подготовку: {weeks}).\n\n"
-            f"ПАСПОРТ АТЛЕТА (за последние 90 дней):\n<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
-            f"{self._zones_text(athlete_profile)}\n\n"
-            "ЗАДАЧА:\n"
-            f"1. {ZONES_RULE} Если зон нет, попроси атлета сначала выполнить /sync и не указывай темпы.\n"
-            f"2. Разбей период ({weeks} нед.) на 4 фазы Дэниелса и укажи, сколько недель занимает каждая "
-            "(сумма должна равняться общему числу недель):\n"
-            "   - Фаза I: Закладка фундамента (аэробная база).\n"
-            "   - Фаза II: Раннее качество (R-повторы, техника, экономичность).\n"
-            "   - Фаза III: Переходное качество (T-порог и I-интервалы).\n"
-            "   - Фаза IV: Финальная подводка (тейпер, выход на пик).\n"
-            "3. Укажи недельный километраж по фазам (рост не более ~10% в неделю, разгрузочная неделя "
-            "каждую 3-ю или 4-ю) и правила предосторожности."
-        )
-        return await self._ask(user_prompt, temperature=0.3)
-
-    async def generate_weekly_microcycle(
-        self,
-        athlete_profile: Dict[str, Any],
-        target_race: str,
-        macro_plan_summary: str,
-        week_number: int,
-        week_start: str,
-        week_end: str,
-        total_weeks: Optional[int] = None,
-    ) -> str:
-        """Недельный микроцикл (Пн–Вс) по правилу 80/20."""
-        macro_context = (macro_plan_summary or "")[:MACRO_CONTEXT_CHARS]
-        progress = f" из {int(total_weeks)}" if total_weeks else ""
-
-        user_prompt = (
-            f"Составь подробное недельное расписание тренировок (неделя подготовки №{int(week_number)}{progress}).\n"
-            f"Период: с {_clean(week_start, 20)} по {_clean(week_end, 20)}.\n"
-            f"Целевой старт: {_clean(target_race, 100)}.\n\n"
-            f"МАКРОПЛАН (определи по нему, в какой фазе находится эта неделя):\n"
-            f"<data>\n{macro_context}\n</data>\n\n"
-            f"ТЕКУЩАЯ ФОРМА АТЛЕТА:\n<data>\n{self._profile_text(athlete_profile)}\n</data>\n\n"
-            f"{self._zones_text(athlete_profile)}\n\n"
-            "ТРЕБОВАНИЯ К НЕДЕЛЕ:\n"
-            f"- {ZONES_RULE}\n"
-            "- Распиши каждый день: Пн, Вт, Ср, Чт, Пт, Сб, Вс.\n"
-            "- Включи 1-2 дня полного отдыха или ОФП/растяжки.\n"
-            "- Соблюдай 80% времени в лёгких зонах и 20% в интенсивных; после тяжёлой работы идёт лёгкий день.\n"
-            "- Для каждой пробежки укажи: дистанцию (км), зону Дэниелса, целевой темп (М:СС /км) и целевой пульс.\n"
-            "- В конце дай итог: общий километраж недели и долю интенсивной работы."
-        )
-        return await self._ask(user_prompt, temperature=0.4)
 
     async def analyze_activity(
         self,

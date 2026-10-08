@@ -1,6 +1,7 @@
 # services/scheduler_service.py
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
+from enum import Enum
 from typing import Optional
 
 from aiogram import Bot
@@ -11,104 +12,105 @@ from database import async_session_maker
 from models.athlete_profile import AthleteProfile
 from models.training_plan import TrainingPlan
 from models.user import AppUser
-from services.ai_coach_service import AICoachService
-from services.coach_service import build_profile_context
+from services.coach_service import build_profile_context, zones_for_profile
 from services.message_service import MessageService
-from services.plan_storage import legacy_text
+from services.plan_calendar import DATE_FORMAT, next_week_dates, plan_week_number
+from services.plan_generator import PlanGenerator
+from services.plan_renderer import render_week
+from services.plan_storage import parse_macro
 from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
+
+LEGACY_PLAN_NOTICE = (
+    "⚠️ Ваш план подготовки создан в старом формате, по нему нельзя построить недельное расписание.\n"
+    "Создайте план заново командой <code>/plan</code>."
+)
+
+
+class WeekStatus(str, Enum):
+    SENT = "sent"                # расписание отправлено
+    LEGACY_PLAN = "legacy_plan"  # макроплан в старом текстовом формате, пользователю отправлена подсказка
+    FINISHED = "finished"        # неделя после забега: план завершён
 
 
 class TrainingSchedulerService:
     """Сервис фоновых периодических задач (рассылка планов и опрос активностей)."""
 
-    def __init__(self, bot: Bot, ai_coach: Optional[AICoachService] = None) -> None:
+    def __init__(self, bot: Bot, plan_generator: PlanGenerator) -> None:
         self.bot = bot
-        self.ai_coach = ai_coach or AICoachService()
+        self.plan_generator = plan_generator
         self.scheduler = AsyncIOScheduler()
 
-    @staticmethod
-    def get_next_week_dates(base_date: Optional[date] = None) -> tuple[date, date, int]:
-        """
-        Границы следующей недели (Понедельник — Воскресенье).
-        Возвращает: (дата_понедельника, дата_воскресенья, номер_недели_в_году).
-        """
-        today = base_date or datetime.now().date()
-        # Дней до следующего понедельника (если сегодня ВС (6), то +1 день)
-        days_ahead = 7 - today.weekday()
-        next_monday = today + timedelta(days=days_ahead)
-        next_sunday = next_monday + timedelta(days=6)
-        week_number = next_monday.isocalendar()[1]
-        return next_monday, next_sunday, week_number
-
-    async def generate_and_send_microcycle_for_user(
+    async def send_week(
         self,
         user: AppUser,
         plan: TrainingPlan,
         profile: Optional[AthleteProfile],
-        target_monday: Optional[date] = None,
-        target_sunday: Optional[date] = None,
-    ) -> bool:
-        """Генерирует недельный микроцикл для пользователя и отправляет в Telegram."""
-        if not target_monday or not target_sunday:
-            target_monday, target_sunday, _ = self.get_next_week_dates()
+        today: Optional[date] = None,
+    ) -> WeekStatus:
+        """Генерирует расписание на следующую неделю, сохраняет и отправляет в Telegram.
 
-        # Порядковый номер недели относительно старта плана
-        plan_created = plan.created_at.date() if isinstance(plan.created_at, datetime) else plan.created_at
-        weeks_elapsed = max(1, ((target_monday - plan_created).days // 7) + 1)
+        Ошибки генерации (PlanGenerationError, AIClientError) пробрасываются: решает вызывающий код.
+        """
+        macro = parse_macro(plan.plan_details)
+        if macro is None:
+            await self.bot.send_message(user.telegram_chat_id, LEGACY_PLAN_NOTICE, parse_mode="HTML")
+            return WeekStatus.LEGACY_PLAN
 
-        profile_dict = build_profile_context(profile)  # текст паспорта + готовые зоны темпа
+        monday, sunday = next_week_dates(today or datetime.now().date())
+        week_number = plan_week_number(plan.race_date, macro.total_weeks, monday)
+        if week_number is None:
+            logger.info("План user_id=%s завершён: забег %s уже прошёл", user.id, plan.race_date)
+            return WeekStatus.FINISHED
 
+        week_start, week_end = monday.strftime(DATE_FORMAT), sunday.strftime(DATE_FORMAT)
+        zones = zones_for_profile(profile)
         logger.info(
-            "Генерация микроцикла для user_id=%s (chat_id=%s), неделя #%d (%s - %s)",
-            user.id, user.telegram_chat_id, weeks_elapsed, target_monday, target_sunday,
+            "Генерация недели для user_id=%s (chat_id=%s): №%d из %d (%s - %s)",
+            user.id, user.telegram_chat_id, week_number, macro.total_weeks, week_start, week_end,
         )
 
-        try:
-            # 1. Генерация расписания по правилу 80/20
-            weekly_text = await self.ai_coach.generate_weekly_microcycle(
-                athlete_profile=profile_dict,
-                target_race=plan.target_race,
-                macro_plan_summary=legacy_text(plan.plan_details) or "",
-                week_number=weeks_elapsed,
-                week_start=target_monday.strftime("%d.%m.%Y"),
-                week_end=target_sunday.strftime("%d.%m.%Y"),
-                total_weeks=plan.total_weeks,
+        # 1. Модель выбирает тренировки, схема и правила проверяются, при замечаниях повтор
+        week = await self.plan_generator.generate_week(
+            athlete_profile=build_profile_context(profile),
+            target_race=plan.target_race,
+            macro=macro,
+            week_number=week_number,
+            week_start=week_start,
+            week_end=week_end,
+            zones=zones,
+        )
+
+        # 2. Сохранение (повторная генерация той же недели перезаписывает запись)
+        async with async_session_maker() as session:
+            await UserService.save_weekly_plan(
+                session=session,
+                user_id=user.id,
+                training_plan_id=plan.id,
+                week_start=monday,
+                week_end=sunday,
+                plan=week,
             )
 
-            # 2. Сохранение в БД (повторная генерация той же недели перезаписывает запись)
-            async with async_session_maker() as session:
-                await UserService.save_weekly_plan(
-                    session=session,
-                    user_id=user.id,
-                    training_plan_id=plan.id,
-                    week_start=target_monday,
-                    week_end=target_sunday,
-                    plan=weekly_text,
-                )
-
-            # 3. Отправка пользователю в Telegram
-            header = (
-                f"📋 <b>Расписание тренировок на неделю (Пн–Вс):</b>\n"
-                f"Период: <code>{target_monday.strftime('%d.%m')} — {target_sunday.strftime('%d.%m.%Y')}</code>\n"
-                f"Цель: <b>{plan.target_race}</b> | Неделя подготовки: <b>#{weeks_elapsed}</b> из {plan.total_weeks}\n\n"
-            )
-
-            for chunk in MessageService.chunk_message(header + weekly_text):
-                await self.bot.send_message(
-                    chat_id=user.telegram_chat_id,
-                    text=chunk,
-                    parse_mode="HTML",
-                )
-            return True
-
-        except Exception as exc:
-            logger.exception("Ошибка при генерации микроцикла для user_id=%s: %s", user.id, exc)
-            return False
+        # 3. Текст собирает код: темп по VDOT, пульс по ЧССmax, текст модели экранирован
+        text = render_week(
+            week,
+            target_race=plan.target_race,
+            week_number=week_number,
+            total_weeks=macro.total_weeks,
+            week_start=week_start,
+            week_end=week_end,
+            phase=macro.phase_for_week(week_number),
+            zones=zones,
+            max_hr=getattr(profile, "max_heart_rate", None),
+        )
+        for chunk in MessageService.chunk_message(text):
+            await self.bot.send_message(chat_id=user.telegram_chat_id, text=chunk, parse_mode="HTML")
+        return WeekStatus.SENT
 
     async def sunday_weekly_distribution_job(self) -> None:
-        """Задача Cron: рассылка микроциклов каждое воскресенье в 15:00."""
+        """Задача Cron: рассылка недельных расписаний каждое воскресенье в 15:00."""
         logger.info("Запуск автоматической воскресной рассылки микроциклов...")
 
         async with async_session_maker() as session:
@@ -118,12 +120,15 @@ class TrainingSchedulerService:
             logger.info("Активных планов для рассылки не найдено.")
             return
 
-        success_count = 0
+        sent = 0
         for user, plan, profile in active_plans:
-            if await self.generate_and_send_microcycle_for_user(user, plan, profile):
-                success_count += 1
+            try:
+                if await self.send_week(user, plan, profile) == WeekStatus.SENT:
+                    sent += 1
+            except Exception as exc:  # ошибка одного пользователя не останавливает рассылку остальным
+                logger.exception("Ошибка при генерации недели для user_id=%s: %s", user.id, exc)
 
-        logger.info("Воскресная рассылка завершена. Успешно отправлено: %d из %d", success_count, len(active_plans))
+        logger.info("Воскресная рассылка завершена. Отправлено расписаний: %d из %d", sent, len(active_plans))
 
     def start(self) -> None:
         """Запуск планировщика задач."""

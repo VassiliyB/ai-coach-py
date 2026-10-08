@@ -41,7 +41,6 @@ class PlannedDay(BaseModel):
     day: int = Field(ge=1, le=7)
     type: WorkoutType
     distance_km: Optional[float] = Field(default=None, ge=0, le=60)   # общая дистанция, с разминкой
-    duration_min: Optional[int] = Field(default=None, ge=0, le=300)
     quality_km: Optional[float] = Field(default=None, ge=0, le=30)    # только "рабочая" часть качественной
     description: str = Field(default="", max_length=300)              # например "5 × 1000 м, отдых 2 мин"
 
@@ -87,12 +86,21 @@ class WeekPlan(BaseModel):
         return round(sum(d.distance_km or 0.0 for d in self.days), 1)
 
 
+# Названия фаз по Дэниелсу. Их задаёт код: модель называла фазы как попало ("Фаза 1", "Тaper").
+PHASE_NAMES = {
+    1: "Закладка фундамента",
+    2: "Раннее качество",
+    3: "Переходное качество",
+    4: "Финальная подводка",
+}
+
+
 class Phase(BaseModel):
     """Фаза периодизации Дэниелса. weeks = 0 допустимо для коротких планов (фаза пропускается)."""
     model_config = ConfigDict(extra="ignore")
 
     number: int = Field(ge=1, le=4)
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(default="", max_length=100)   # всегда перезаписывается из PHASE_NAMES
     weeks: int = Field(ge=0, le=52)
     focus: str = Field(default="", max_length=400)
 
@@ -109,6 +117,8 @@ class MacroPlan(BaseModel):
     def _check_structure(self) -> "MacroPlan":
         if [p.number for p in self.phases] != [1, 2, 3, 4]:
             raise ValueError("фазы должны идти по порядку: 1, 2, 3, 4")
+        for phase in self.phases:
+            phase.name = PHASE_NAMES[phase.number]
         if any(km <= 0 or km > 250 for km in self.weekly_km):
             raise ValueError("недельный километраж должен быть в диапазоне (0; 250] км")
         if len(self.weekly_km) != self.total_weeks:
@@ -120,6 +130,10 @@ class MacroPlan(BaseModel):
     @property
     def total_weeks(self) -> int:
         return sum(p.weeks for p in self.phases)
+
+    def week_phase_numbers(self) -> List[int]:
+        """Номер фазы для каждой недели плана по порядку (фазы с weeks = 0 пропускаются)."""
+        return [p.number for p in self.phases for _ in range(p.weeks)]
 
     def phase_for_week(self, week_number: int) -> Phase:
         """Фаза, в которую попадает неделя подготовки (нумерация с 1)."""
