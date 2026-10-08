@@ -4,7 +4,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from services.user_time import (
-    format_offset, is_weekly_send_time, local_today, normalize_timezone, offset_from_activity, to_tzinfo,
+    format_offset,
+    is_weekly_send_time,
+    local_today,
+    normalize_timezone,
+    offset_from_activity,
+    to_tzinfo,
 )
 
 

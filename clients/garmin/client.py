@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
-    GarminConnectConnectionError,
     GarminConnectTooManyRequestsError,
 )
 

@@ -1,8 +1,10 @@
 # get_user.py
 import asyncio
+
+from sqlalchemy import select
+
 from database import async_session_maker
 from models import AppUser
-from sqlalchemy import select
 
 
 async def main():

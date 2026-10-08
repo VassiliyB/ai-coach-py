@@ -55,7 +55,9 @@ tests/                      pytest, без сети, БД и .env
 ## Команды (Windows, PowerShell, venv)
 
 ```powershell
+pip install -r requirements-dev.txt                   # зависимости для разработки (pytest, ruff)
 python -m pytest -v                                   # все тесты
+ruff check .                                          # линтер; ruff check --fix . исправляет часть замечаний сам
 python main.py                                        # запуск (сам применяет миграции)
 alembic revision --autogenerate -m "описание"         # после изменения моделей
 alembic upgrade head                                  # применить; alembic current / alembic check
@@ -132,6 +134,8 @@ python generate_token.py                              # вход в Garmin (сн
 - Чистая логика (`coach_service`, `plan_validator`, `plan_paces`, `plan_calendar`, `plan_storage`, `plan_renderer`, `activity_zones`) без I/O, всегда с тестами.
 - Модули, которые тесты импортируют, не загружают `config` при импорте (например, `clients.garmin.token_storage` берёт настройки в конструкторе).
 - Правка формулы или порога сопровождается тестом.
+- Перед коммитом `ruff check .` без замечаний. Правила в `pyproject.toml`: E, W, F, I, B, строка до 120 символов; в миграциях проверяются только ошибки (F). Новый синтаксис аннотаций (UP) и `ruff format` пока не включены.
+- Боевые зависимости в `requirements.txt`, инструменты разработки в `requirements-dev.txt`.
 
 ## Модель данных (кратко)
 
@@ -145,11 +149,12 @@ python generate_token.py                              # вход в Garmin (сн
 - Этап 3: `coach_service` (VDOT и зоны), поля профиля, тесты.
 - Этап 4: схемы, валидатор, генератор, темпы, пульс и длительность кодом, рендер; `plan_details` в JSONB; `/plan`, `/test_week` и воскресная рассылка на структурных планах; клиент Claude и выбор провайдера.
 - Этап 5: миграции Alembic при старте вместо `create_all` (проверено на пустой БД); `/analyze` с расчётом зоны и пульса кодом и общим клиентом LLM через DI; поллинг активностей с автоматическим разбором новых пробежек; часовые пояса пользователей (`/timezone`, определение по Garmin, рассылка по местному времени); блокировки тяжёлых операций на пользователя.
+- Этап 6: `requirements-dev.txt`, ruff (`pyproject.toml`), исправлены найденные им замечания.
 
 Проверено скриптами на живой модели и локальной БД (запись с откатом): генерация макроплана и недели, сохранение и чтение JSONB, `send_week` для нового, старого и завершённого плана. Живая проверка в Telegram (`/sync`, `/plan`, `/test_week`) ещё не подтверждена.
 
 Дальше:
-- Этап 6: ruff, CI, Docker, `/delete_me`, `requirements-dev.txt` для pytest.
+- Этап 6: CI (GitHub Actions: ruff и pytest), `/delete_me`, Docker.
 
 ## Известные ограничения
 

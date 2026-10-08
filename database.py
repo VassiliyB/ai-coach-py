@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import (
 
 from config import BASE_DIR, settings
 
-
 # 1. Асинхронный движок (Engine)
 engine = create_async_engine(
     url=settings.DATABASE_URL.get_secret_value(),

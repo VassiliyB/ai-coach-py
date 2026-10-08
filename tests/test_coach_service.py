@@ -3,7 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from services.coach_service import (
-    build_profile_context, calculate_vdot, calculate_zones, predict_race_time, zones_for_profile,
+    build_profile_context,
+    calculate_vdot,
+    calculate_zones,
+    predict_race_time,
+    zones_for_profile,
 )
 
 

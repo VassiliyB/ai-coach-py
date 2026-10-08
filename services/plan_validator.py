@@ -61,7 +61,7 @@ def validate_week(
         return ["в неделе нет беговых тренировок"]
 
     # 1. Принцип hard-easy: два тяжёлых дня подряд недопустимы
-    for current, nxt in zip(week.days, week.days[1:]):
+    for current, nxt in zip(week.days, week.days[1:], strict=False):  # пары соседних дней
         if current.type in HARD_TYPES and nxt.type in HARD_TYPES:
             problems.append(
                 f"{DAY_NAMES[current.day - 1]} и {DAY_NAMES[nxt.day - 1]}: две тяжёлые тренировки подряд "
@@ -162,7 +162,7 @@ def validate_macro(macro: MacroPlan, total_weeks: int) -> List[str]:
     phase_of_week = macro.week_phase_numbers()  # схема гарантирует ту же длину, что у weekly_km
 
     # Пик объёма в фазах развития, а не в начале плана и не в подводке
-    peak_weeks = [v for v, ph in zip(km, phase_of_week) if ph in PEAK_PHASES]
+    peak_weeks = [v for v, ph in zip(km, phase_of_week, strict=True) if ph in PEAK_PHASES]
     if peak_weeks and max(peak_weeks) + KM_EPS < peak:
         peak_week = km.index(peak) + 1
         problems.append(
@@ -172,7 +172,7 @@ def validate_macro(macro: MacroPlan, total_weeks: int) -> List[str]:
 
     # Объём не проваливается ниже текущего уровня атлета до начала подводки
     floor = MIN_SHARE_OF_FIRST_WEEK * km[0]
-    for i, (v, ph) in enumerate(zip(km, phase_of_week)):
+    for i, (v, ph) in enumerate(zip(km, phase_of_week, strict=True)):
         if ph != TAPER_PHASE and v + KM_EPS < floor:
             problems.append(
                 f"неделя {i + 1}: {v:g} км, ниже {MIN_SHARE_OF_FIRST_WEEK:.0%} от первой недели "

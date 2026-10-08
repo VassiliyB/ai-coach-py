@@ -5,12 +5,13 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from bot.handlers import analyze, plan, settings as settings_handlers, start, sync
+from bot.handlers import analyze, plan, start, sync
+from bot.handlers import settings as settings_handlers
+from bot.middlewares import UserLockMiddleware
 from clients.garmin import GarminClient
 from clients.llm import create_llm_client
 from config import settings
 from database import engine, run_migrations
-from bot.middlewares import UserLockMiddleware
 from services.activity_poller import ActivityPoller
 from services.ai_coach_service import AICoachService
 from services.plan_generator import PlanGenerator

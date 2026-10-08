@@ -7,13 +7,13 @@ import pytest
 from clients.ai_errors import AIClientError, AIResponseFormatError
 from schemas.plan import MacroPlan
 from services.coach_service import calculate_zones
-from services.plan_validator import long_run_max_km
 from services.plan_generator import (
     MAX_ATTEMPTS,
     PlanGenerationError,
     PlanGenerator,
     parse_json_object,
 )
+from services.plan_validator import long_run_max_km
 
 
 class FakeAI:

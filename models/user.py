@@ -8,8 +8,8 @@ from models.base import Base, utcnow
 
 if TYPE_CHECKING:
     from models.athlete_profile import AthleteProfile
-    from models.training_plan import TrainingPlan
     from models.message import ChatMessage
+    from models.training_plan import TrainingPlan
 
 
 class AppUser(Base):

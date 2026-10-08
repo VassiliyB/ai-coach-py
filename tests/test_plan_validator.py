@@ -3,7 +3,11 @@ import math
 from schemas.plan import MacroPlan, WeekPlan
 from services.coach_service import calculate_zones
 from services.plan_validator import (
-    LONG_MAX_MINUTES, format_problems, long_run_max_km, validate_macro, validate_week,
+    LONG_MAX_MINUTES,
+    format_problems,
+    long_run_max_km,
+    validate_macro,
+    validate_week,
 )
 
 
@@ -218,7 +222,7 @@ def test_macro_taper_on_boundary_is_ok():
 
 def macro_with(weeks, km):
     data = macro_data()
-    for phase, n in zip(data["phases"], weeks):
+    for phase, n in zip(data["phases"], weeks, strict=True):
         phase["weeks"] = n
     data["weekly_km"] = km
     return MacroPlan.model_validate(data)

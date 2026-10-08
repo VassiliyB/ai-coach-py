@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+src = ["."]                     # пакеты проекта (bot, clients, services...) считаются своими при сортировке импортов
+extend-exclude = ["venv"]
+
+[tool.ruff.lint]
+# E/W: стиль PEP 8, F: ошибки (неиспользуемое, неизвестные имена), I: порядок импортов, B: типичные баги.
+# UP (новый синтаксис аннотаций) и ruff format пока не включены: это переписывание почти всех файлов
+# без изменения поведения, его лучше делать отдельным коммитом.
+select = ["E", "W", "F", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Миграции генерирует Alembic: стиль в них не правим, ошибки (F) по-прежнему проверяются
+"migrations/versions/*" = ["E", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

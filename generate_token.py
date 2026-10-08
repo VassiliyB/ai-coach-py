@@ -2,6 +2,7 @@
 import asyncio
 import getpass
 from pathlib import Path
+
 from garminconnect import Garmin
 
 from database import async_session_maker
@@ -15,7 +16,7 @@ TOKEN_DIR.mkdir(parents=True, exist_ok=True)
 async def main():
     print(f"=== Генерация токена Garmin для пользователя {CHAT_ID} ===")
     email = input("Введи Email от Garmin Connect: ").strip()
-    password = input("Введи Пароль от Garmin Connect: ")
+    password = getpass.getpass("Введи Пароль от Garmin Connect (ввод не отображается): ")
 
     print("\nПодключаемся к Garmin SSO...")
     print("👉 Если Garmin запросит 6-значный код (MFA) — введи его из почты сюда в консоль.\n")
@@ -37,7 +38,7 @@ async def main():
         # Автоматически активируем пользователя в PostgreSQL
         async with async_session_maker() as session:
             await UserService.set_garmin_linked(session, chat_id=CHAT_ID, linked=True)
-            print(f"✅ Статус пользователя в базе данных обновлен (garmin_linked = True)!")
+            print("✅ Статус пользователя в базе данных обновлен (garmin_linked = True)!")
 
         print("\nТеперь можно запускать 'python main.py' и тестировать команду /sync в Telegram!")
 
