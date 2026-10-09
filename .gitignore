@@ -32,3 +32,5 @@ reset_db.py
 # === Логи и дампы ===
 *.log
 docker-compose.override.yml
+# === Резервные копии БД (сервис backup) ===
+backups/

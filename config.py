@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     KNOWLEDGE_BASE_PATH: Path = BASE_DIR / "sports_knowledge.txt"
     # Короткая база для Groq: полная (~6 тыс. токенов) почти не оставляет места в лимите 8000 токенов в минуту
     KNOWLEDGE_BASE_SHORT_PATH: Path = BASE_DIR / "sports_knowledge_short.txt"
+    # Папка копий БД (сервис backup в compose): бот раз в день проверяет, что копирование не остановилось.
+    # Не задана (локальный запуск): проверки нет
+    BACKUP_DIR: Optional[Path] = None
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

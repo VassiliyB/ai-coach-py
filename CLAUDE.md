@@ -63,6 +63,8 @@ services/workout_catalog.py каталог качественных тренир
 services/garmin_link.py     сброс привязки Garmin при истёкшей сессии (токены + garmin_linked)
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
 services/admin_alerts.py    ошибки из лога (ERROR+) админам в Telegram: пачки, не чаще раза в час на одну ошибку
+services/backup_watch.py    раз в день: копирование БД не остановилось (иначе ERROR -> уведомление)
+scripts/backup.sh           ежедневная копия БД (сервис backup): pg_dump, пропуск без изменений, ротация
 services/scheduler_service.py send_week, ежечасная проверка рассылки недель (ВС с 15:00 по поясу пользователя), опрос Garmin
 bot/                        states.py, keyboards.py, commands.py (меню команд), access_panel.py (панель /users), fsm_storage.py (Redis или память для FSM), middlewares.py (AccessMiddleware, UserLockMiddleware), handlers/{access,start,sync,plan,show_plan,race,analyze,ask,settings,garmin_export}.py
 migrations/                 Alembic (env.py берёт URL из settings)
@@ -92,6 +94,8 @@ docker compose up -d --build                          # БД и бот; мигр
 docker compose logs -f bot                            # логи бота
 docker compose run --rm bot python generate_token.py  # вход в Garmin, токены попадут в том
 docker compose down                                   # остановить (данные в томах сохраняются; -v удалит их)
+docker compose run --rm backup now                    # копия БД сейчас (в ./backups)
+docker compose logs backup                            # журнал копирования
 ```
 
 Перед `alembic revision` БД должна быть на `head`, иначе ошибка «Target database is not up to date». Каждую автомиграцию просматривать глазами. Смену типа колонки с данными писать вручную с `postgresql_using` (autogenerate делает `ALTER ... TYPE` без `USING`, и PostgreSQL его отклоняет).
@@ -269,6 +273,10 @@ docker compose down                                   # остановить (д
 - В compose `DATABASE_URL` перекрывается адресом контейнера `db`, `REDIS_URL` адресом `redis`, `GARMIN_TOKENS_DIR` указывает на том `garmin_tokens`. Порты БД и Redis наружу не публикуются.
 - БД в контейнере отдельная от локальной PostgreSQL: при переходе на Docker данные нужно перенести (`pg_dump` / `pg_restore`) или начать заново (`/sync`, `/plan`).
 - Не запускать бота в контейнере и локально одновременно с одним `TELEGRAM_BOT_TOKEN`: два опроса Telegram мешают друг другу, а блокировки пользователей работают только внутри одного процесса.
+- Резервные копии: сервис `backup` (образ `postgres:16`, скрипт `scripts/backup.sh`) раз в сутки после `BACKUP_HOUR` (4) по `BACKUP_TZ` (имя IANA, по умолчанию `Europe/Moscow`; смещение вида UTC+05:00 Linux поймёт наоборот) делает `pg_dump` в `./backups` на хосте (не том: переживает `down -v`). Обычный SQL без отметки времени, `gzip -n`; сумма считается без строк `\restrict`/`\unrestrict` (случайный ключ pg_dump 16.10+): если данные не изменились, файл не создаётся. Хранится `BACKUP_KEEP` (14) последних копий. В БД копирование ничего не пишет.
+- Бот видит `./backups` только для чтения (`BACKUP_DIR`) и раз в день (09:30 UTC) проверяет `.last_date`: старше 2 дней — ERROR и уведомление админам; файла ещё нет — WARNING.
+- Восстановление (в пустую базу): `gunzip -c backups/<файл>.sql.gz | docker compose exec -T db psql -U coach -d <база> -v ON_ERROR_STOP=1`. Проверено: копия разворачивается во временную базу, число строк совпадает с рабочей.
+- `scripts/*.sh` с `eol=lf` в `.gitattributes`: с CRLF после checkout на Windows `sh` в контейнере скрипт не выполнит.
 - На сервере Garmin видит IP сервера: при 429 вход делать через `docker compose run --rm bot python generate_token.py` с другой сети или переносить токены в том.
 
 **Состояния диалогов (`bot/fsm_storage.py`)**
@@ -335,6 +343,7 @@ docker compose down                                   # остановить (д
 - Состояния диалогов в Redis (`REDIS_URL`, сервис `redis` в compose): сохранение и чтение после переподключения проверены на временном контейнере Redis, образ бота собирается с пакетом `redis`, перезапуск посреди `/plan` проверен вживую.
 - Пункты 7–9: краткая база знаний для Groq и подгонка `max_tokens` (живая проверка на Groq: макроплан, неделя фазы I и фазы III с `gpt-oss-120b`), учёт токенов в `llm_usage` с расходом в `/users` (миграция `b9d4f2a6c8e1` проверена на локальной БД с откатом, запросы репозитория скриптом с откатом), лимит 8 вопросов `/ask` в день. Учёт, `/users` и лимит проверены в Telegram (на Claude).
 - Пункты 11–12: итог недели в воскресенье (проверен на живых пробежках Garmin автора) и история последних двух вопросов `/ask` за час (запись и чтение проверены на локальной БД с откатом); оба проверены в Telegram.
+- Пункт 6: ежедневная копия БД (сервис `backup`), проверка свежести копий ботом. Копирование, пропуск без изменений, ротация и восстановление во временную базу проверены на БД в контейнере.
 
 ## Известные ограничения
 

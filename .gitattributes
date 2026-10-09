@@ -1,0 +1,2 @@
+# Скрипты запускает sh в контейнере Linux: CRLF из checkout на Windows его ломает
+*.sh text eol=lf

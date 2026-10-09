@@ -1,4 +1,4 @@
-# Бот, PostgreSQL и Redis (состояния диалогов). Запуск: docker compose up -d --build; логи: docker compose logs -f bot
+# Бот, PostgreSQL, Redis (состояния диалогов) и ежедневная копия БД в ./backups. Запуск: docker compose up -d --build; логи: docker compose logs -f bot
 # В .env, кроме ключей бота, нужен POSTGRES_PASSWORD (пароль БД в контейнере);
 # POSTGRES_USER и POSTGRES_DB необязательны (по умолчанию coach и coach_db).
 services:
@@ -32,6 +32,25 @@ services:
       retries: 10
     # Порт наружу не публикуется, как и у БД
 
+  backup:
+    image: postgres:16          # pg_dump той же версии, что сервер
+    restart: unless-stopped
+    entrypoint: ["sh", "/scripts/backup.sh"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-coach}
+      POSTGRES_DB: ${POSTGRES_DB:-coach_db}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}
+      TZ: ${BACKUP_TZ:-Europe/Moscow}     # только имя IANA: «UTC+05:00» Linux поймёт как UTC−5
+      BACKUP_HOUR: ${BACKUP_HOUR:-4}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - ./scripts/backup.sh:/scripts/backup.sh:ro
+      # Папка на хосте, а не том Docker: копии переживают docker compose down -v
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
   bot:
     build: .
     restart: unless-stopped
@@ -41,8 +60,11 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}@db:5432/${POSTGRES_DB:-coach_db}
       GARMIN_TOKENS_DIR: /app/.garmin_tokens
       REDIS_URL: redis://redis:6379/0
+      BACKUP_DIR: /backups
     volumes:
       - garmin_tokens:/app/.garmin_tokens
+      # Только чтение: бот проверяет, что копирование не остановилось (services/backup_watch.py)
+      - ./backups:/backups:ro
     depends_on:
       db:
         condition: service_healthy

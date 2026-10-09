@@ -25,3 +25,5 @@ reset_db.py
 Dockerfile
 docker-compose*.yml
 .dockerignore
+
+backups/

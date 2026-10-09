@@ -3,6 +3,7 @@ import logging
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from aiogram import Bot
@@ -20,6 +21,7 @@ from models.training_plan import TrainingPlan
 from models.user import AppUser
 from schemas.plan import MacroPlan
 from services.activity_poller import ActivityPoller
+from services.backup_watch import check_backups
 from services.coach_service import TrainingZones, build_profile_context, calculate_zones, zones_for_profile
 from services.heart_rate import HrRef, profile_hr_basis
 from services.macro_replan import (
@@ -77,10 +79,12 @@ class TrainingSchedulerService:
         poll_minutes: int = 0,
         locks: Optional[UserLocks] = None,
         garmin: Optional[GarminClient] = None,
+        backup_dir: Optional[Path] = None,
     ) -> None:
         """activity_poller и poll_minutes > 0 включают опрос Garmin с этим интервалом.
 
         garmin: для корректировки недели по факту прошлой; без него недели строятся строго по макроплану.
+        backup_dir: папка копий БД; с ней раз в день проверяется, что копирование не остановилось.
         """
         self.bot = bot
         self.garmin = garmin
@@ -88,6 +92,7 @@ class TrainingSchedulerService:
         self.activity_poller = activity_poller if poll_minutes > 0 else None
         self.poll_minutes = poll_minutes
         self.locks = locks or UserLocks()
+        self.backup_dir = backup_dir
         self.scheduler = AsyncIOScheduler()
 
     async def send_week(
@@ -352,11 +357,24 @@ class TrainingSchedulerService:
                 max_instances=1,
                 coalesce=True,
             )
+        if self.backup_dir is not None:
+            # Раз в день: копирование БД не остановилось (иначе ERROR и уведомление админам)
+            self.scheduler.add_job(
+                self.check_backups,
+                trigger=CronTrigger(hour=9, minute=30),
+                id="backup_watch_job",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
         self.scheduler.start()
         logger.info(
             "Фоновый планировщик запущен (недели: ВС с 15:00 по времени пользователя; опрос Garmin: %s).",
             f"каждые {self.poll_minutes} мин" if self.activity_poller else "выключен",
         )
+
+    async def check_backups(self) -> None:
+        check_backups(self.backup_dir, datetime.now(timezone.utc).date())
 
     def shutdown(self) -> None:
         """Остановка планировщика при завершении программы."""
