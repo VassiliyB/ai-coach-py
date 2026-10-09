@@ -100,6 +100,15 @@ class UserService:
         await session.commit()
 
     @staticmethod
+    async def set_race_result(
+        session: AsyncSession, user_id: int, distance_m: float, time_s: int, race_date: date, vdot: float,
+    ) -> AthleteProfile:
+        """Результат забега из /race, уже проверен services.race_result.check_race."""
+        profile = await UserRepository(session).set_race_result(user_id, distance_m, time_s, race_date, vdot)
+        await session.commit()
+        return profile
+
+    @staticmethod
     async def get_athlete_profile(session: AsyncSession, user_id: int) -> Optional[AthleteProfile]:
         return await UserRepository(session).get_profile(user_id)
 

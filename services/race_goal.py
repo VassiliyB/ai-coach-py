@@ -112,16 +112,23 @@ def weekly_vdot_gain(vdot: float) -> float:
     return next(gain for limit, gain in VDOT_GAIN_PER_WEEK if vdot < limit)
 
 
-def max_vdot_gain(current_vdot: float, weeks: int) -> float:
-    """Сколько VDOT реально прибавить за weeks недель подготовки, с запасом на заниженную оценку формы."""
+def max_vdot_gain(current_vdot: float, weeks: int, margin: float = VDOT_ESTIMATE_MARGIN) -> float:
+    """Сколько VDOT реально прибавить за weeks недель подготовки.
+
+    margin: запас на заниженную оценку формы по тренировкам; у VDOT по результату забега он 0
+    (services.race_result.goal_margin).
+    """
     gain = min(weekly_vdot_gain(current_vdot) * max(0, weeks), current_vdot * MAX_GAIN_SHARE)
-    return gain + VDOT_ESTIMATE_MARGIN
+    return gain + margin
 
 
-def assess_goal(current_vdot: float, target_time_s: float, distance_m: float, weeks: int) -> GoalAssessment:
+def assess_goal(
+    current_vdot: float, target_time_s: float, distance_m: float, weeks: int,
+    margin: float = VDOT_ESTIMATE_MARGIN,
+) -> GoalAssessment:
     """Оценка цели: какой VDOT она требует и успевает ли атлет до него дорасти за weeks недель."""
     target_vdot = calculate_vdot(distance_m, target_time_s)
-    max_gain = max_vdot_gain(current_vdot, weeks)
+    max_gain = max_vdot_gain(current_vdot, weeks, margin)
     best_vdot = min(current_vdot + max_gain, MAX_VDOT)
     needed = target_vdot - current_vdot
 
@@ -145,9 +152,11 @@ def assess_goal(current_vdot: float, target_time_s: float, distance_m: float, we
     )
 
 
-def realistic_goal_s(current_vdot: float, distance_m: float, weeks: int) -> int:
+def realistic_goal_s(
+    current_vdot: float, distance_m: float, weeks: int, margin: float = VDOT_ESTIMATE_MARGIN,
+) -> int:
     """Предлагаемая цель: результат при приросте VDOT на AMBITIOUS_SHARE от возможного, округлено до 30 с вверх."""
-    vdot = min(current_vdot + max_vdot_gain(current_vdot, weeks) * AMBITIOUS_SHARE, MAX_VDOT)
+    vdot = min(current_vdot + max_vdot_gain(current_vdot, weeks, margin) * AMBITIOUS_SHARE, MAX_VDOT)
     return int(math.ceil(predict_race_time(vdot, distance_m) / 30) * 30)
 
 
@@ -232,9 +241,11 @@ def render_forecast_line(current_vdot: float, distance_m: float) -> str:
     )
 
 
-def fastest_realistic_s(current_vdot: float, distance_m: float, weeks: int) -> int:
+def fastest_realistic_s(
+    current_vdot: float, distance_m: float, weeks: int, margin: float = VDOT_ESTIMATE_MARGIN,
+) -> int:
     """Самая быстрая цель, которую assess_goal ещё примет: лучший реальный результат, округлённый до 5 с вверх."""
-    best_vdot = min(current_vdot + max_vdot_gain(current_vdot, weeks), MAX_VDOT)
+    best_vdot = min(current_vdot + max_vdot_gain(current_vdot, weeks, margin), MAX_VDOT)
     return int(math.ceil(predict_race_time(best_vdot, distance_m) / 5) * 5)
 
 

@@ -31,6 +31,7 @@ from services.plan_generator import PlanGenerator, target_km_for_week
 from services.plan_renderer import render_replan, render_vdot_review, render_week
 from services.plan_storage import parse_macro, parse_week
 from services.race_goal import assess_goal, race_distance_m, render_goal_after_review
+from services.race_result import goal_margin
 from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now, local_today
@@ -192,6 +193,7 @@ class TrainingSchedulerService:
         if plan.target_time_s and distance_m:
             assessment = assess_goal(
                 review.new, plan.target_time_s, distance_m, max(0, plan_total_weeks(today, plan.race_date)),
+                goal_margin(profile, today),
             )
             goal_note = render_goal_after_review(assessment, distance_m)
         text = render_vdot_review(review, calculate_zones(review.new), goal_note)

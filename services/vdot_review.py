@@ -113,13 +113,18 @@ def review_vdot(current: float, raw_runs: List[Dict[str, Any]], today: date) -> 
 
 def vdot_after_sync(
     sync_vdot: Optional[float], current: Optional[float], reviewed_on: Optional[date],
+    race_active: bool = False,
 ) -> Optional[float]:
     """VDOT для сохранения при /sync.
 
     /sync берёт лучшую пробежку за 90 дней. Пока VDOT не пересматривался, это и есть оценка формы.
     После пересмотра /sync не поднимает VDOT выше пересмотренного: иначе старая пробежка до перерыва
     вернула бы завышенные темпы. Рост формы подтвердит следующий пересмотр.
+    race_active: VDOT задан свежим забегом (services.race_result). Тренировки оценивают форму хуже забега,
+    поэтому /sync его не меняет; снизить после перерыва или поднять может только пересмотр.
     """
+    if race_active and current is not None:
+        return current
     if sync_vdot is None:
         return current if reviewed_on else None
     if reviewed_on is None or current is None:

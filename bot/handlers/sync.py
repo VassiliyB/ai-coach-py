@@ -10,7 +10,9 @@ from clients.garmin import GarminAuthError, GarminClient, GarminRateLimitError
 from database import async_session_maker
 from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
 from services.message_service import MessageService
+from services.race_result import active_race
 from services.user_service import UserService
+from services.user_time import local_today
 from services.vdot_review import vdot_after_sync
 
 logger = logging.getLogger(__name__)
@@ -39,10 +41,19 @@ async def handle_sync(message: Message, garmin: GarminClient) -> None:
         async with async_session_maker() as session:
             user = await UserService.get_or_create_user(session, chat_id)
             old = await UserService.get_athlete_profile(session, user.id)
-            # После пересмотров раз в 4 недели старая быстрая пробежка не поднимает VDOT в обход правил
+            # После пересмотров раз в 4 недели старая быстрая пробежка не поднимает VDOT в обход правил,
+            # а свежий забег из /race тренировки не меняют вовсе
             reviewed_on = getattr(old, "vdot_reviewed_on", None)
-            vdot = vdot_after_sync(profile_data.get("vdot"), getattr(old, "vdot", None), reviewed_on)
-            if profile_data.get("vdot") is not None and vdot is not None and vdot < profile_data["vdot"]:
+            race = active_race(old, local_today(UserService.timezone_of(user)))
+            vdot = vdot_after_sync(
+                profile_data.get("vdot"), getattr(old, "vdot", None), reviewed_on, race_active=race is not None,
+            )
+            if race is not None:
+                vdot_note = (
+                    f"ℹ️ Для темпов оставлен VDOT <b>{vdot:g}</b> по забегу {race.race_date:%d.%m}: "
+                    "результат забега точнее тренировок.\n\n"
+                )
+            elif profile_data.get("vdot") is not None and vdot is not None and vdot < profile_data["vdot"]:
                 vdot_note = (
                     f"ℹ️ Для темпов оставлен VDOT <b>{vdot:g}</b> из пересмотра формы "
                     f"{reviewed_on:%d.%m}: рост подтвердит следующий пересмотр.\n\n"

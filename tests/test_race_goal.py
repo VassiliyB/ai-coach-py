@@ -153,3 +153,14 @@ def test_fastest_realistic_goal_is_accepted_and_boundary():
 def test_forecast_line():
     line = render_forecast_line(45, HM)
     assert format_duration(predict_race_time(45, HM)) in line and "VDOT 45.0" in line
+
+
+def test_zero_margin_for_race_vdot_is_stricter():
+    # VDOT по забегу точный: без запаса на «скрытую» форму возможный прирост меньше ровно на запас
+    assert max_vdot_gain(45, 12) - max_vdot_gain(45, 12, margin=0.0) == pytest.approx(VDOT_ESTIMATE_MARGIN)
+    assert fastest_realistic_s(45, HM, 12, margin=0.0) > fastest_realistic_s(45, HM, 12)
+    assert realistic_goal_s(45, HM, 12, margin=0.0) >= realistic_goal_s(45, HM, 12)
+    # Цель на границе с запасом без запаса уже нереалистична
+    edge = fastest_realistic_s(45, HM, 12)
+    assert assess_goal(45, edge, HM, 12).accepted
+    assert not assess_goal(45, edge, HM, 12, margin=0.0).accepted

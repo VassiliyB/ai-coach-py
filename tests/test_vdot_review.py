@@ -143,3 +143,12 @@ def test_vdot_after_sync(sync_vdot, current, reviewed, expected):
     from services.vdot_review import vdot_after_sync
 
     assert vdot_after_sync(sync_vdot, current, reviewed) == expected
+
+
+def test_vdot_after_sync_keeps_race_vdot():
+    from services.vdot_review import vdot_after_sync
+
+    # Свежий забег из /race: тренировки VDOT не меняют ни вниз, ни вверх
+    assert vdot_after_sync(42.0, 45.3, TODAY, race_active=True) == 45.3
+    assert vdot_after_sync(47.0, 45.3, TODAY, race_active=True) == 45.3
+    assert vdot_after_sync(None, 45.3, TODAY, race_active=True) == 45.3

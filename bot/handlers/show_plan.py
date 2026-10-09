@@ -35,6 +35,7 @@ from services.race_goal import (
     render_goal_line,
     render_goal_rejection,
 )
+from services.race_result import goal_margin
 from services.user_service import UserService
 from services.user_time import local_today
 
@@ -49,13 +50,15 @@ def _current_vdot(profile: Any) -> Optional[float]:
     return vdot if vdot and MIN_VDOT <= vdot <= MAX_VDOT else None
 
 
-async def _load(chat_id: int) -> Tuple[Optional[TrainingPlan], Optional[float], date]:
-    """Активный план, текущий VDOT и сегодняшняя дата по поясу пользователя."""
+async def _load(chat_id: int) -> Tuple[Optional[TrainingPlan], Optional[float], date, float]:
+    """Активный план, текущий VDOT, сегодняшняя дата по поясу пользователя и запас оценки цели
+    (0 у VDOT по свежему забегу)."""
     async with async_session_maker() as session:
         user = await UserService.get_or_create_user(session, chat_id)
         plan = await UserService.get_active_plan(session, user.id)
         profile = await UserService.get_athlete_profile(session, user.id)
-    return plan, _current_vdot(profile), local_today(UserService.timezone_of(user))
+    today = local_today(UserService.timezone_of(user))
+    return plan, _current_vdot(profile), today, goal_margin(profile, today)
 
 
 def _weeks_left(today: date, race_date: date) -> int:
@@ -63,14 +66,16 @@ def _weeks_left(today: date, race_date: date) -> int:
     return max(0, plan_total_weeks(today, race_date))
 
 
-def _overview(plan: TrainingPlan, vdot: Optional[float], today: date) -> Tuple[str, Any]:
+def _overview(plan: TrainingPlan, vdot: Optional[float], today: date, margin: float) -> Tuple[str, Any]:
     """Текст обзора и клавиатура. Цель переоценивается по текущему VDOT и оставшимся неделям."""
     distance_m = race_distance_m(plan.target_race)
     goal_line = forecast_line = None
     if vdot and distance_m:
         forecast_line = render_forecast_line(vdot, distance_m)
         if plan.target_time_s:
-            assessment = assess_goal(vdot, plan.target_time_s, distance_m, _weeks_left(today, plan.race_date))
+            assessment = assess_goal(
+                vdot, plan.target_time_s, distance_m, _weeks_left(today, plan.race_date), margin,
+            )
             goal_line = render_goal_line(assessment, distance_m)
     if plan.target_time_s and goal_line is None and distance_m:
         # VDOT пропал (например, нет свежих пробежек): цель показываем без оценки
@@ -101,25 +106,25 @@ def _overview(plan: TrainingPlan, vdot: Optional[float], today: date) -> Tuple[s
 @router.message(Command("show_plan"))
 async def handle_show_plan(message: Message, state: FSMContext) -> None:
     await state.clear()
-    plan, vdot, today = await _load(message.chat.id)
+    plan, vdot, today, margin = await _load(message.chat.id)
     if plan is None:
         await message.answer(NO_PLAN_TEXT, parse_mode="HTML")
         return
-    text, keyboard = _overview(plan, vdot, today)
+    text, keyboard = _overview(plan, vdot, today, margin)
     await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
 @router.callback_query(F.data == PLAN_GOAL_EDIT)
 async def handle_goal_edit(callback: CallbackQuery, state: FSMContext) -> None:
     """Запрос новой цели с допустимой границей: быстрее лучшего реального результата нельзя."""
-    plan, vdot, today = await _load(callback.message.chat.id)
+    plan, vdot, today, margin = await _load(callback.message.chat.id)
     distance_m = race_distance_m(plan.target_race) if plan else None
     if plan is None or not vdot or not distance_m or plan.race_date <= today:
         await callback.answer("Цель сейчас изменить нельзя: обновите /show_plan.", show_alert=True)
         return
 
     weeks = _weeks_left(today, plan.race_date)
-    fastest = fastest_realistic_s(vdot, distance_m, weeks)
+    fastest = fastest_realistic_s(vdot, distance_m, weeks, margin)
     await state.set_state(ShowPlanStates.waiting_for_new_goal)
     await state.update_data(plan_id=plan.id)
     await callback.answer()
@@ -138,7 +143,7 @@ async def handle_goal_edit(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(ShowPlanStates.waiting_for_new_goal, ~F.text.startswith("/"))   # команды не считаем целью
 async def handle_new_goal(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
-    plan, vdot, today = await _load(message.chat.id)
+    plan, vdot, today, margin = await _load(message.chat.id)
     distance_m = race_distance_m(plan.target_race) if plan else None
     if plan is None or plan.id != data.get("plan_id") or not vdot or not distance_m:
         await state.clear()
@@ -154,7 +159,7 @@ async def handle_new_goal(message: Message, state: FSMContext) -> None:
         return
 
     weeks = _weeks_left(today, plan.race_date)
-    assessment = assess_goal(vdot, goal_s, distance_m, weeks)
+    assessment = assess_goal(vdot, goal_s, distance_m, weeks, margin)
     if not assessment.accepted:
         await message.answer(
             f"{render_goal_rejection(assessment, weeks)}\n\nВведите другую цель.",
@@ -167,14 +172,14 @@ async def handle_new_goal(message: Message, state: FSMContext) -> None:
     await state.clear()
     plan.target_time_s = goal_s
     logger.info("Цель плана %s изменена на %s с (chat_id=%s)", plan.id, goal_s, message.chat.id)
-    text, keyboard = _overview(plan, vdot, today)
+    text, keyboard = _overview(plan, vdot, today, margin)
     await message.answer(f"✅ Цель обновлена.\n\n{text}", reply_markup=keyboard, parse_mode="HTML")
 
 
 @router.callback_query(F.data == PLAN_GOAL_CLEAR)
 async def handle_goal_clear(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    plan, vdot, today = await _load(callback.message.chat.id)
+    plan, vdot, today, margin = await _load(callback.message.chat.id)
     if plan is None:
         await callback.answer("Активного плана нет.", show_alert=True)
         return
@@ -182,7 +187,7 @@ async def handle_goal_clear(callback: CallbackQuery, state: FSMContext) -> None:
         await UserService.set_plan_target_time(session, plan.id, None)
     plan.target_time_s = None
     await callback.answer("Цель убрана")
-    text, keyboard = _overview(plan, vdot, today)
+    text, keyboard = _overview(plan, vdot, today, margin)
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
 
 

@@ -26,6 +26,7 @@ from services.plan_renderer import render_intro_days, render_macro
 from services.race_goal import (
     GOAL_FORMATS,
     RACE_DISTANCES,
+    VDOT_ESTIMATE_MARGIN,
     GoalAssessment,
     assess_goal,
     format_duration,
@@ -36,6 +37,7 @@ from services.race_goal import (
     render_goal_line,
     render_goal_rejection,
 )
+from services.race_result import goal_margin
 from services.scheduler_service import TrainingSchedulerService, WeekStatus
 from services.user_service import UserService
 from services.user_time import local_today
@@ -118,11 +120,12 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     distance_m = data.get("distance_m")
     vdot = _current_vdot(profile)
+    margin = goal_margin(profile, today)   # у VDOT по свежему забегу нет запаса на «скрытую» форму
 
     suggested = None
     if vdot and distance_m:
-        suggested = realistic_goal_s(vdot, distance_m, total_weeks)
-        forecast = assess_goal(vdot, suggested, distance_m, total_weeks)
+        suggested = realistic_goal_s(vdot, distance_m, total_weeks, margin)
+        forecast = assess_goal(vdot, suggested, distance_m, total_weeks, margin)
         hint = (
             f"По текущей форме (VDOT {vdot:.1f}) прогноз: <b>{format_duration(forecast.predicted_now_s)}</b>.\n"
             f"За {total_weeks} нед. реально выйти примерно на <b>{format_duration(forecast.best_realistic_s)}</b>, "
@@ -136,7 +139,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
         )
 
     await state.update_data(
-        race_date=race_date.isoformat(), total_weeks=total_weeks, suggested_goal_s=suggested,
+        race_date=race_date.isoformat(), total_weeks=total_weeks, suggested_goal_s=suggested, goal_margin=margin,
     )
     await state.set_state(PlanCreationStates.waiting_for_goal)
     await message.answer(
@@ -172,7 +175,9 @@ async def handle_goal_entered(message: Message, state: FSMContext, plan_generato
         await message.answer(f"❌ Не удалось распознать цель.\n{GOAL_FORMATS}", parse_mode="HTML")
         return
 
-    assessment = assess_goal(vdot, goal_s, distance_m, data["total_weeks"])
+    assessment = assess_goal(
+        vdot, goal_s, distance_m, data["total_weeks"], data.get("goal_margin", VDOT_ESTIMATE_MARGIN),
+    )
     if not assessment.accepted:
         suggested = data.get("suggested_goal_s")
         await message.answer(
@@ -204,7 +209,10 @@ async def handle_goal_button(callback: CallbackQuery, state: FSMContext, plan_ge
             profile = await UserService.get_athlete_profile(session, user.id)
         vdot = _current_vdot(profile)
         if vdot:
-            assessment = assess_goal(vdot, suggested, data["distance_m"], data["total_weeks"])
+            assessment = assess_goal(
+                vdot, suggested, data["distance_m"], data["total_weeks"],
+                data.get("goal_margin", VDOT_ESTIMATE_MARGIN),
+            )
     await _create_plan(callback.message, state, plan_generator, assessment)
 
 

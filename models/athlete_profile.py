@@ -26,6 +26,10 @@ class AthleteProfile(Base):
     best_effort_time_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # Дата последнего пересмотра VDOT раз в 4 недели (services.vdot_review); /sync её не трогает
     vdot_reviewed_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Результат забега из /race (services.race_result): пока свежий, VDOT задаёт он, а не тренировки
+    race_result_distance_m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    race_result_time_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    race_result_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=func.now(), nullable=False
     )

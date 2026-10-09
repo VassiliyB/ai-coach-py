@@ -120,6 +120,28 @@ class UserRepository:
         )
         return (await self.session.execute(stmt)).scalar_one()
 
+    async def set_race_result(
+        self, user_id: int, distance_m: float, time_s: int, race_date: date, vdot: float,
+    ) -> AthleteProfile:
+        """Забег из /race: VDOT по нему, дата забега как дата последней оценки формы.
+        Профиля может не быть (без /sync), поэтому upsert."""
+        values = {
+            "race_result_distance_m": distance_m,
+            "race_result_time_s": time_s,
+            "race_result_date": race_date,
+            "vdot": vdot,
+            "vdot_reviewed_on": race_date,
+            "updated_at": utcnow(),
+        }
+        stmt = (
+            pg_insert(AthleteProfile)
+            .values(user_id=user_id, **values)
+            .on_conflict_do_update(index_elements=[AthleteProfile.user_id], set_=values)
+            .returning(AthleteProfile)
+            .execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one()
+
     async def set_reviewed_vdot(self, user_id: int, vdot: float, reviewed_on: date) -> None:
         await self.session.execute(
             update(AthleteProfile)
