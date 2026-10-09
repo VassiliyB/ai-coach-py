@@ -77,7 +77,9 @@ class ClaudeClient:
             "messages": chat,
         }
         if system:
-            params["system"] = system
+            # Системный промпт с базой знаний одинаков у всех вызовов сервиса: кэшируем его (5 мин).
+            # Повторное чтение стоит ~0.1 обычной цены; промпт короче минимума модели просто не кэшируется
+            params["system"] = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
         try:
             response = await self.client.messages.create(**params)
@@ -93,8 +95,9 @@ class ClaudeClient:
 
         usage = response.usage
         logger.info(
-            "Claude %s: вход %s, выход %s токенов, stop_reason=%s",
-            response.model, usage.input_tokens, usage.output_tokens, response.stop_reason,
+            "Claude %s: вход %s (из кэша %s, в кэш %s), выход %s токенов, stop_reason=%s",
+            response.model, usage.input_tokens, getattr(usage, "cache_read_input_tokens", None),
+            getattr(usage, "cache_creation_input_tokens", None), usage.output_tokens, response.stop_reason,
         )
         if response.stop_reason == "refusal":
             raise AIClientError("ИИ отказался отвечать на этот запрос.")
