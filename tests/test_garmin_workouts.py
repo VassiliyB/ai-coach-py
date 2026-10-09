@@ -14,6 +14,7 @@ from services.garmin_workouts import (
     recovery_seconds,
     split_previous,
 )
+from services.heart_rate import KIND_LTHR, HeartRateBasis
 from services.plan_paces import hr_range_for_zone
 
 ZONES = calculate_zones(50)
@@ -100,6 +101,12 @@ def test_without_zones_target_is_heart_rate():
     assert step["targetType"]["workoutTargetTypeKey"] == "heart.rate.zone"
     assert (step["targetValueOne"], step["targetValueTwo"]) == hr_range_for_zone("E", MAX_HR)
     assert w["estimatedDurationInSecs"] == 0
+
+
+def test_without_zones_target_from_lthr():
+    lthr = HeartRateBasis(170, KIND_LTHR, manual=True)
+    (step,) = steps(build_workout(PlannedDay(day=1, type="easy", distance_km=8), None, lthr))
+    assert (step["targetValueOne"], step["targetValueTwo"]) == (128, 151)
 
 
 def test_without_zones_and_hr_no_target():

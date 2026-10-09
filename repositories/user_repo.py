@@ -142,6 +142,18 @@ class UserRepository:
         )
         return (await self.session.execute(stmt)).scalar_one()
 
+    async def set_pulse(self, user_id: int, manual_max_hr: Optional[int], lthr: Optional[int]) -> AthleteProfile:
+        """Ручные ЧССmax и пульс ПАНО из /pulse (None: не задан). Профиля может не быть (без /sync), поэтому upsert."""
+        values = {"manual_max_hr": manual_max_hr, "lthr": lthr, "updated_at": utcnow()}
+        stmt = (
+            pg_insert(AthleteProfile)
+            .values(user_id=user_id, **values)
+            .on_conflict_do_update(index_elements=[AthleteProfile.user_id], set_=values)
+            .returning(AthleteProfile)
+            .execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one()
+
     async def set_reviewed_vdot(self, user_id: int, vdot: float, reviewed_on: date) -> None:
         await self.session.execute(
             update(AthleteProfile)

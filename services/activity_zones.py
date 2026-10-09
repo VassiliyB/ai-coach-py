@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from services.coach_service import TrainingZones, format_pace
-from services.plan_paces import HR_FRACTIONS, hr_range_for_zone
+from services.heart_rate import HrRef, as_basis
+from services.plan_paces import hr_range_for_zone
 
 ZONE_NAMES = {
     "below_E": "медленнее зоны E (восстановительный бег)",
@@ -43,16 +44,10 @@ def pace_zone(pace_sec: Optional[float], zones: Optional[TrainingZones]) -> Opti
     return min(references, key=lambda ref: abs(ref[1] - pace_sec))[0]
 
 
-def hr_zone(avg_hr: Optional[float], max_hr: Optional[int]) -> Optional[Tuple[str, int]]:
-    """(зона, процент от ЧССmax) по среднему пульсу. Промежутки между диапазонами относятся к зоне ниже."""
-    if not avg_hr or not max_hr or max_hr <= 0:
-        return None
-    fraction = avg_hr / max_hr
-    zone = "below_E"
-    for name in ("E", "M", "T", "I"):
-        if fraction >= HR_FRACTIONS[name][0]:
-            zone = name
-    return zone, round(fraction * 100)
+def hr_zone(avg_hr: Optional[float], hr_basis: HrRef) -> Optional[Tuple[str, int]]:
+    """(зона, процент от ЧССmax или ПАНО) по среднему пульсу. Промежутки между диапазонами относятся к зоне ниже."""
+    basis = as_basis(hr_basis)
+    return basis.zone_of(avg_hr) if basis else None
 
 
 @dataclass(frozen=True)
@@ -79,9 +74,9 @@ class ActivityZones:
 
 
 def classify_activity(
-    pace_sec: Optional[float], avg_hr: Optional[float], zones: Optional[TrainingZones], max_hr: Optional[int],
+    pace_sec: Optional[float], avg_hr: Optional[float], zones: Optional[TrainingZones], hr_basis: HrRef,
 ) -> ActivityZones:
-    hr = hr_zone(avg_hr, max_hr)
+    hr = hr_zone(avg_hr, hr_basis)
     return ActivityZones(
         pace_zone=pace_zone(pace_sec, zones),
         hr_zone=hr[0] if hr else None,
@@ -94,7 +89,7 @@ def format_activity_zones(
     pace_sec: Optional[float],
     avg_hr: Optional[float],
     zones: Optional[TrainingZones],
-    max_hr: Optional[int],
+    hr_basis: HrRef,
     peak_hr: Optional[float] = None,
 ) -> str:
     """Текст расчёта для промпта /analyze. peak_hr: максимальный пульс за тренировку."""
@@ -108,18 +103,18 @@ def format_activity_zones(
         lines.append("- Зона по темпу не определена (нет VDOT или темпа).")
     if result.hr_zone:
         lines.append(
-            f"- Средний пульс {round(avg_hr)} уд/мин = {result.hr_pct}% от ЧССmax {max_hr}: "
+            f"- Средний пульс {round(avg_hr)} уд/мин = {result.hr_pct}% от {as_basis(hr_basis).label}: "
             f"{HR_ZONE_NAMES[result.hr_zone]}."
         )
     else:
-        lines.append("- Зона по пульсу не определена (нет пульса или ЧССmax).")
-    peak = hr_zone(peak_hr, max_hr)
+        lines.append("- Зона по пульсу не определена (нет пульса или ЧССmax/ПАНО).")
+    peak = hr_zone(peak_hr, hr_basis)
     if peak:
         lines.append(
-            f"- Максимальный пульс за тренировку {round(peak_hr)} уд/мин = {peak[1]}% от ЧССmax: "
+            f"- Максимальный пульс за тренировку {round(peak_hr)} уд/мин = {peak[1]}% от {as_basis(hr_basis).label}: "
             f"{HR_ZONE_NAMES[peak[0]]}."
         )
-    easy_hr = hr_range_for_zone("E", max_hr)
+    easy_hr = hr_range_for_zone("E", hr_basis)
     if easy_hr:
         lines.append(f"- Пульс лёгкого бега (зона E) для атлета: {easy_hr[0]}–{easy_hr[1]} уд/мин.")
     if result.gray_zone:

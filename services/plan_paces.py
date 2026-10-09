@@ -1,9 +1,10 @@
 # services/plan_paces.py
 """Подстановка темпов и пульса: зону дня определяет тип тренировки, а значения считает код."""
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from schemas.plan import PlannedDay
 from services.coach_service import PaceRange, TrainingZones
+from services.heart_rate import HrRef, as_basis
 
 _ZONE_ATTR = {
     "E": "easy",
@@ -12,16 +13,6 @@ _ZONE_ATTR = {
     "I": "interval",
     "R": "repetition",
 }
-
-# Пульсовые диапазоны в долях от ЧССmax (из sports_knowledge.txt). Для зоны R пульс не задаётся:
-# отрезки слишком короткие, пульс не успевает выйти на плато.
-HR_FRACTIONS: Dict[str, Tuple[float, float]] = {
-    "E": (0.65, 0.79),
-    "M": (0.80, 0.85),
-    "T": (0.88, 0.92),
-    "I": (0.95, 1.00),
-}
-
 
 def pace_for_zone(zone: Optional[str], zones: Optional[TrainingZones]) -> Optional[PaceRange]:
     if not zone or zones is None:
@@ -64,16 +55,13 @@ def estimate_duration_min(day: PlannedDay, zones: Optional[TrainingZones]) -> Op
     return max(DURATION_ROUND_MIN, round(minutes / DURATION_ROUND_MIN) * DURATION_ROUND_MIN)
 
 
-def hr_range_for_zone(zone: Optional[str], max_hr: Optional[int]) -> Optional[Tuple[int, int]]:
-    if not zone or not max_hr or max_hr <= 0:
-        return None
-    fractions = HR_FRACTIONS.get(zone)
-    if not fractions:
-        return None
-    return round(max_hr * fractions[0]), round(max_hr * fractions[1])
+def hr_range_for_zone(zone: Optional[str], hr_basis: HrRef) -> Optional[Tuple[int, int]]:
+    """Пульсовой диапазон зоны от ЧССmax или ПАНО (services.heart_rate); число это ЧССmax."""
+    basis = as_basis(hr_basis)
+    return basis.range_for_zone(zone) if basis and zone else None
 
 
-def hr_text(day: PlannedDay, max_hr: Optional[int]) -> str:
+def hr_text(day: PlannedDay, hr_basis: HrRef) -> str:
     """Пульсовой диапазон дня, например '130–158 уд/мин'. Пустая строка, если он неприменим."""
-    hr = hr_range_for_zone(day.zone, max_hr)
+    hr = hr_range_for_zone(day.zone, hr_basis)
     return f"{hr[0]}–{hr[1]} уд/мин" if hr else ""

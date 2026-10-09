@@ -29,6 +29,7 @@ from garminconnect.workout import (
 
 from schemas.plan import RUNNING_TYPES, PlannedDay, WeekPlan
 from services.coach_service import PaceRange, TrainingZones
+from services.heart_rate import HrRef
 from services.plan_paces import estimate_duration_min, hr_range_for_zone, pace_for_zone
 from services.plan_renderer import TYPE_LABELS
 from services.workout_catalog import Repeat, Step, workout_steps
@@ -105,21 +106,21 @@ def pace_target_mps(pace: PaceRange) -> Tuple[float, float]:
     return round(1000 / slow, 3), round(1000 / fast, 3)
 
 
-def step_target(zone: Optional[str], zones: Optional[TrainingZones], max_hr: Optional[int]) -> Optional[Any]:
-    """Цель шага: темп по VDOT, без зон пульс по ЧССmax, иначе без цели."""
+def step_target(zone: Optional[str], zones: Optional[TrainingZones], hr_basis: HrRef) -> Optional[Any]:
+    """Цель шага: темп по VDOT, без зон пульс по ЧССmax или ПАНО, иначе без цели."""
     pace = pace_for_zone(zone, zones)
     if pace:
         low, high = pace_target_mps(pace)
         return PaceTarget(lower_limit=low, upper_limit=high)
-    hr = hr_range_for_zone(zone, max_hr)
+    hr = hr_range_for_zone(zone, hr_basis)
     if hr:
         return CustomHeartRateTarget(lower_limit=hr[0], upper_limit=hr[1])
     return None
 
 
-def _distance_step(km: float, order: int, zone: Optional[str], zones, max_hr) -> Any:
+def _distance_step(km: float, order: int, zone: Optional[str], zones, hr_basis) -> Any:
     meters = float(round(km * 1000))
-    target = step_target(zone, zones, max_hr)
+    target = step_target(zone, zones, hr_basis)
     if target is None:
         return create_distance_interval_step(meters, order)
     return create_targeted_distance_interval_step(meters, order, target)
@@ -133,20 +134,20 @@ def _as_distance(step: Any, km: float) -> Any:
     return step
 
 
-def _time_step(seconds: float, order: int, zone: Optional[str], zones, max_hr) -> Any:
-    target = step_target(zone, zones, max_hr)
+def _time_step(seconds: float, order: int, zone: Optional[str], zones, hr_basis) -> Any:
+    target = step_target(zone, zones, hr_basis)
     if target is None:
         return create_interval_step(float(seconds), order)
     return create_targeted_interval_step(float(seconds), order, target)
 
 
-def _catalog_step(step: Step, order: int, zones, max_hr) -> Any:
+def _catalog_step(step: Step, order: int, zones, hr_basis) -> Any:
     """Шаг каталога -> шаг библиотеки. Разминка, заминка и восстановление без цели, работа с целью зоны."""
     if step.kind == "work":
         zone = step.zone if step.target else None   # в гору цель по темпу бессмысленна
         if step.distance_m:
-            return _distance_step(step.distance_m / 1000, order, zone, zones, max_hr)
-        return _time_step(step.duration_s, order, zone, zones, max_hr)
+            return _distance_step(step.distance_m / 1000, order, zone, zones, hr_basis)
+        return _time_step(step.duration_s, order, zone, zones, hr_basis)
     factory = {"warmup": create_warmup_step, "cooldown": create_cooldown_step,
                "recovery": create_recovery_step}[step.kind]
     if step.distance_m:
@@ -154,29 +155,29 @@ def _catalog_step(step: Step, order: int, zones, max_hr) -> Any:
     return factory(float(step.duration_s), order)
 
 
-def _catalog_steps(specs: List[object], zones, max_hr) -> List[Any]:
+def _catalog_steps(specs: List[object], zones, hr_basis) -> List[Any]:
     steps: List[Any] = []
     order = 1
     for spec in specs:
         if isinstance(spec, Repeat):
-            children = [_catalog_step(child, order + 1 + i, zones, max_hr) for i, child in enumerate(spec.steps)]
+            children = [_catalog_step(child, order + 1 + i, zones, hr_basis) for i, child in enumerate(spec.steps)]
             steps.append(create_repeat_group(spec.iterations, children, order))
             order += 1 + len(children)
         else:
-            steps.append(_catalog_step(spec, order, zones, max_hr))
+            steps.append(_catalog_step(spec, order, zones, hr_basis))
             order += 1
     return steps
 
 
-def build_steps(day: PlannedDay, zones: Optional[TrainingZones], max_hr: Optional[int]) -> List[Any]:
+def build_steps(day: PlannedDay, zones: Optional[TrainingZones], hr_basis: HrRef) -> List[Any]:
     """Шаги тренировки. Лёгкий и длительный бег одним отрезком в зоне E, качественная с разминкой и заминкой.
     Тренировка из каталога строится по своему шаблону, старые дни без workout_id разбираются по описанию."""
     specs = workout_steps(day, zones)
     if specs:
-        return _catalog_steps(specs, zones, max_hr)
+        return _catalog_steps(specs, zones, hr_basis)
     distance = day.distance_km or 0.0
     if not day.quality_km:
-        return [_distance_step(distance, 1, day.zone, zones, max_hr)]
+        return [_distance_step(distance, 1, day.zone, zones, hr_basis)]
 
     repeats = parse_repeats(day.description, day.quality_km)
     work_km = day.quality_km
@@ -196,12 +197,12 @@ def build_steps(day: PlannedDay, zones: Optional[TrainingZones], max_hr: Optiona
         order += 1
 
     if repeats:
-        rep = _distance_step(repeats.distance_m / 1000, order + 1, day.zone, zones, max_hr)
+        rep = _distance_step(repeats.distance_m / 1000, order + 1, day.zone, zones, hr_basis)
         rest = create_recovery_step(float(rec_sec), order + 2)
         steps.append(create_repeat_group(repeats.count, [rep, rest], order))
         order += 3
     else:
-        steps.append(_distance_step(work_km, order, day.zone, zones, max_hr))
+        steps.append(_distance_step(work_km, order, day.zone, zones, hr_basis))
         order += 1
 
     if side_km >= MIN_STEP_KM:
@@ -216,7 +217,7 @@ def workout_name(day: PlannedDay) -> str:
 def build_workout(
     day: PlannedDay,
     zones: Optional[TrainingZones],
-    max_hr: Optional[int],
+    hr_basis: HrRef,
 ) -> Optional[Dict[str, Any]]:
     """JSON тренировки для workout-service Garmin. None для дня без бега (отдых, ОФП)."""
     if day.type not in RUNNING_TYPES or not day.distance_km:
@@ -230,7 +231,7 @@ def build_workout(
         workoutSegments=[WorkoutSegment(
             segmentOrder=1,
             sportType={"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
-            workoutSteps=build_steps(day, zones, max_hr),
+            workoutSteps=build_steps(day, zones, hr_basis),
         )],
     )
     return workout.to_dict()

@@ -109,6 +109,15 @@ class UserService:
         return profile
 
     @staticmethod
+    async def set_pulse(
+        session: AsyncSession, user_id: int, manual_max_hr: Optional[int], lthr: Optional[int],
+    ) -> AthleteProfile:
+        """Ручные ЧССmax и ПАНО, уже проверены services.heart_rate.check_pulse."""
+        profile = await UserRepository(session).set_pulse(user_id, manual_max_hr, lthr)
+        await session.commit()
+        return profile
+
+    @staticmethod
     async def get_athlete_profile(session: AsyncSession, user_id: int) -> Optional[AthleteProfile]:
         return await UserRepository(session).get_profile(user_id)
 

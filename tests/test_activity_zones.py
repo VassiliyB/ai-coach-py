@@ -3,6 +3,7 @@ import pytest
 from clients.garmin.analytics import parse_last_activity
 from services.activity_zones import classify_activity, format_activity_zones, hr_zone, pace_zone
 from services.coach_service import calculate_zones
+from services.heart_rate import KIND_LTHR, HeartRateBasis
 
 ZONES = calculate_zones(41.8)   # E 5:39–6:45, M 5:15, T 4:55, I 4:30, R 4:16
 MAX_HR = 180
@@ -59,7 +60,7 @@ def test_easy_pace_with_gray_zone_pulse():
 def test_peak_hr_line():
     result = classify_activity(344, 151, ZONES, MAX_HR)
     text = format_activity_zones(result, 344, 151, ZONES, MAX_HR, peak_hr=166)
-    assert "Максимальный пульс за тренировку 166 уд/мин = 92% от ЧССmax: зона T (порог)" in text
+    assert "Максимальный пульс за тренировку 166 уд/мин = 92% от ЧССmax 180: зона T (порог)" in text
     assert "Максимальный пульс" not in format_activity_zones(result, 344, 151, ZONES, MAX_HR)
 
 
@@ -97,3 +98,13 @@ def test_fast_pace_low_pulse_is_not_flagged():
 def test_slow_pace_with_gray_pulse_is_flagged():
     # медленнее E, но пульс 84%: тревожный признак (усталость, жара)
     assert classify_activity(420, 151, ZONES, MAX_HR).hr_above_pace
+
+
+def test_zones_from_lthr():
+    # Тот же пульс 151 от ПАНО 170 это 89%: верх лёгкой зоны, а не серая зона
+    lthr = HeartRateBasis(170, KIND_LTHR, manual=True)
+    result = classify_activity(344, 151, ZONES, lthr)
+    assert (result.hr_zone, result.hr_pct) == ("E", 89)
+    text = format_activity_zones(result, 344, 151, ZONES, lthr)
+    assert "151 уд/мин = 89% от пульса ПАНО 170: зона E" in text
+    assert "Пульс лёгкого бега (зона E) для атлета: 128–151 уд/мин" in text

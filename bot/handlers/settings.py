@@ -11,6 +11,15 @@ from bot.keyboards import DELETE_CANCEL, DELETE_CONFIRM, get_delete_confirm_keyb
 from clients.garmin import GarminClient
 from database import async_session_maker
 from services.access_control import AccessControl
+from services.heart_rate import (
+    KIND_LTHR,
+    KIND_MAX,
+    check_pulse,
+    parse_pulse,
+    profile_hr_basis,
+    pulse_help,
+    render_pulse,
+)
 from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import local_now, normalize_timezone
@@ -59,6 +68,48 @@ async def handle_timezone(message: Message, command: CommandObject) -> None:
     await message.answer(
         f"✅ Часовой пояс: <b>{html.escape(tz)}</b>, сейчас у вас "
         f"<b>{local_now(UserService.timezone_of(user)):%H:%M %d.%m}</b>.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("pulse"))
+async def handle_pulse(message: Message, command: CommandObject) -> None:
+    """Просмотр пульсовых зон и ручной ввод ЧССmax или пульса ПАНО (services.heart_rate)."""
+    async with async_session_maker() as session:
+        user = await UserService.get_or_create_user(session, message.chat.id)
+        profile = await UserService.get_athlete_profile(session, user.id)
+        manual_max, lthr = getattr(profile, "manual_max_hr", None), getattr(profile, "lthr", None)
+
+        if not command.args:
+            await message.answer(render_pulse(profile_hr_basis(profile), manual_max, lthr), parse_mode="HTML")
+            return
+
+        value = parse_pulse(command.args)
+        if value is None:
+            await message.answer(
+                f"❌ Не удалось распознать «{html.escape(command.args.strip()[:30])}».\n\n"
+                f"{pulse_help(manual_max, lthr)}",
+                parse_mode="HTML",
+            )
+            return
+        error = check_pulse(value, manual_max, lthr)
+        if error:
+            await message.answer(f"❌ {error}", parse_mode="HTML")
+            return
+
+        if value.kind == KIND_MAX:
+            manual_max = value.bpm
+        elif value.kind == KIND_LTHR:
+            lthr = value.bpm
+        else:
+            manual_max = lthr = None
+        profile = await UserService.set_pulse(session, user.id, manual_max, lthr)
+
+    logger.info("Пульс задан вручную (chat_id=%s): ЧССmax=%s, ПАНО=%s", message.chat.id, manual_max, lthr)
+    head = "✅ Ручные значения сброшены." if value.kind is None else "✅ Сохранено."
+    await message.answer(
+        f"{head} Новые зоны действуют в следующих расписаниях, разборе тренировок и выгрузке в Garmin.\n\n"
+        f"{render_pulse(profile_hr_basis(profile), manual_max, lthr, with_help=False)}",
         parse_mode="HTML",
     )
 

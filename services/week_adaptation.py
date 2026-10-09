@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from schemas.plan import QUALITY_TYPES, RUNNING_TYPES, WeekPlan
 from services.activity_zones import classify_activity
 from services.coach_service import TrainingZones
+from services.heart_rate import HrRef
 from services.plan_validator import MAX_WEEKLY_GROWTH
 
 MIN_DAYS_FOR_REVIEW = 4          # раньше четверга выполнение недели не оцениваем: мало данных
@@ -94,11 +95,11 @@ def run_facts(runs: Iterable[Dict[str, Any]]) -> List[RunFact]:
     return facts
 
 
-def _is_quality(run: RunFact, zones: Optional[TrainingZones], max_hr: Optional[int]) -> bool:
+def _is_quality(run: RunFact, zones: Optional[TrainingZones], hr_basis: HrRef) -> bool:
     """Средний темп интервальной тренировки размыт разминкой и отдыхом, поэтому смотрим и на эффект Garmin."""
     if run.anaerobic_te is not None and run.anaerobic_te >= QUALITY_ANAEROBIC_TE:
         return True
-    return classify_activity(run.pace_sec, run.avg_hr, zones, max_hr).pace_zone in ("M", "T", "I", "R")
+    return classify_activity(run.pace_sec, run.avg_hr, zones, hr_basis).pace_zone in ("M", "T", "I", "R")
 
 
 def review_week(
@@ -107,7 +108,7 @@ def review_week(
     runs: List[RunFact],
     today: date,
     zones: Optional[TrainingZones] = None,
-    max_hr: Optional[int] = None,
+    hr_basis: HrRef = None,
 ) -> WeekReview:
     """Сравнение недели, начатой week_start, с пробежками до today включительно.
 
@@ -128,7 +129,7 @@ def review_week(
 
     easy_hr_high = 0
     for r in week_runs:
-        z = classify_activity(r.pace_sec, r.avg_hr, zones, max_hr)
+        z = classify_activity(r.pace_sec, r.avg_hr, zones, hr_basis)
         if z.pace_zone in ("below_E", "E") and z.hr_above_pace:
             easy_hr_high += 1
 
@@ -136,7 +137,7 @@ def review_week(
         planned_km=round(planned_km, 1),
         done_km=round(sum(r.distance_km for r in week_runs), 1),
         planned_quality=planned_quality,
-        done_quality=sum(_is_quality(r, zones, max_hr) for r in week_runs),
+        done_quality=sum(_is_quality(r, zones, hr_basis) for r in week_runs),
         easy_hr_high=easy_hr_high,
         days_covered=min(7, (today - week_start).days + 1),
     )

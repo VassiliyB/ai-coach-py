@@ -20,6 +20,9 @@ class AthleteProfile(Base):
     average_weekly_km: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     max_heart_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     typical_easy_heart_rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Заданы вручную через /pulse (services.heart_rate); /sync их не трогает. Зоны: ПАНО > ручной максимум > пик Garmin
+    manual_max_hr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    lthr: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     garmin_vo2_max: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     vdot: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     best_effort_distance_m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

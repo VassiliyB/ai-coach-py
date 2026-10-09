@@ -39,7 +39,7 @@ def make_macro(notes=None):
 def render(week, **overrides):
     params = dict(
         target_race="21.1 км (Полумарафон)", week_number=5, total_weeks=12,
-        week_start="01.03.2027", week_end="07.03.2027", zones=ZONES, max_hr=200,
+        week_start="01.03.2027", week_end="07.03.2027", zones=ZONES, hr_basis=200,
     )
     params.update(overrides)
     return render_week(week, **params)
@@ -101,7 +101,7 @@ def test_without_zones_shows_hint_and_no_paces():
 
 
 def test_without_max_hr_no_pulse():
-    assert "уд/мин" not in render(make_week(), max_hr=None)
+    assert "уд/мин" not in render(make_week(), hr_basis=None)
 
 
 def test_note_is_rendered():
@@ -166,7 +166,7 @@ def test_intro_days_show_only_remaining_days():
         {"day": 7, "type": "rest", "description": "Отдых <перед> неделей №1"},
     ]})
     days = [date(2026, 10, 8), date(2026, 10, 9), date(2026, 10, 10), date(2026, 10, 11)]  # чт–вс
-    text = render_intro_days(week, days, zones=ZONES, max_hr=200)
+    text = render_intro_days(week, days, zones=ZONES, hr_basis=200)
     assert "До старта плана</b> · 08.10 – 11.10" in text
     assert "Объём: <b>20 км</b>" in text
     assert "<b>Пн</b>" not in text and "<b>Ср</b>" not in text   # прошедшие дни скрыты

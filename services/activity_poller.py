@@ -15,6 +15,7 @@ from services.activity_polling import FETCH_LIMIT, activity_id, select_for_analy
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context, zones_for_profile
 from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
+from services.heart_rate import profile_hr_basis
 from services.message_service import MessageService
 from services.user_locks import UserLocks
 from services.user_service import UserService
@@ -98,7 +99,7 @@ class ActivityPoller:
             athlete_profile=build_profile_context(profile),
             activity=act,
             zones=zones_for_profile(profile),
-            max_hr=getattr(profile, "max_heart_rate", None),
+            hr_basis=profile_hr_basis(profile),
         )
         name = html.escape(str(act.get("name") or "Пробежка"))
         header = f"🏃 <b>Новая тренировка</b>: {name} · {act.get('distance_km')} км\n\n"

@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from schemas.plan import MacroPlan, Phase, PlannedDay, WeekPlan, WorkoutType
 from services.coach_service import TrainingZones
+from services.heart_rate import HrRef
 from services.macro_replan import Replan
 from services.plan_paces import estimate_duration_min, hr_text, pace_text
 from services.vdot_review import VdotChange, VdotReview
@@ -57,7 +58,7 @@ def render_zones(zones: TrainingZones) -> str:
     ])
 
 
-def _render_day(day: PlannedDay, zones: Optional[TrainingZones], max_hr: Optional[int]) -> str:
+def _render_day(day: PlannedDay, zones: Optional[TrainingZones], hr_basis: HrRef) -> str:
     label = TYPE_LABELS[day.type]
     head = f"{TYPE_ICONS[day.type]} <b>{DAY_NAMES[day.day - 1]}</b>{SEP}{label}"
     if day.distance_km:
@@ -74,7 +75,7 @@ def _render_day(day: PlannedDay, zones: Optional[TrainingZones], max_hr: Optiona
     if pace:
         suffix = " (рабочая часть)" if day.quality_km else ""
         details.append(f"темп <code>{pace}</code>{suffix}")
-    hr = hr_text(day, max_hr)
+    hr = hr_text(day, hr_basis)
     if hr:
         details.append(f"пульс <code>{hr}</code>")
     if details:
@@ -96,7 +97,7 @@ def render_week(
     week_end: str,
     phase: Optional[Phase] = None,
     zones: Optional[TrainingZones] = None,
-    max_hr: Optional[int] = None,
+    hr_basis: HrRef = None,
     adjustment: Optional[WeekAdjustment] = None,
 ) -> str:
     """Недельное расписание. week_start и week_end приходят уже отформатированными строками.
@@ -124,7 +125,7 @@ def render_week(
             lines += [f"• {_e(reason)}" for reason in adjustment.reasons]
         lines.append("")
 
-    blocks = [_render_day(d, zones, max_hr) for d in week.days]
+    blocks = [_render_day(d, zones, hr_basis) for d in week.days]
     lines.append("\n\n".join(blocks))
 
     if week.note.strip():
@@ -139,7 +140,7 @@ def render_intro_days(
     days: List[date],
     *,
     zones: Optional[TrainingZones] = None,
-    max_hr: Optional[int] = None,
+    hr_basis: HrRef = None,
 ) -> str:
     """Вводные дни до старта плана: показываются только days, прошедшие дни недели (rest) скрыты."""
     active = {d.isoweekday() for d in days}
@@ -149,7 +150,7 @@ def render_intro_days(
         "Неделя №1 начнётся в понедельник, а пока база: только лёгкий бег.",
         f"Объём: <b>{_km(round(sum(d.distance_km or 0.0 for d in shown), 1))} км</b>",
         "",
-        "\n\n".join(_render_day(d, zones, max_hr) for d in shown),
+        "\n\n".join(_render_day(d, zones, hr_basis) for d in shown),
     ]
     if week.note.strip():
         lines += ["", f"💬 <i>{_e(week.note.strip())}</i>"]

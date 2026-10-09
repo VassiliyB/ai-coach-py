@@ -11,6 +11,7 @@ from database import async_session_maker
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context, zones_for_profile
 from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
+from services.heart_rate import profile_hr_basis
 from services.message_service import MessageService
 from services.user_service import UserService
 
@@ -40,7 +41,7 @@ async def handle_analyze(message: Message, garmin: GarminClient, ai_coach: AICoa
             profile = await UserService.get_athlete_profile(session, user.id)
             profile_dict = build_profile_context(profile)  # текст паспорта + готовые зоны темпа
             zones = zones_for_profile(profile)
-            max_hr = getattr(profile, "max_heart_rate", None)
+            hr_basis = profile_hr_basis(profile)
 
         await status_msg.edit_text("🧠 Анализирую пульс, зоны и эффект тренировки...")
 
@@ -48,7 +49,7 @@ async def handle_analyze(message: Message, garmin: GarminClient, ai_coach: AICoa
             athlete_profile=profile_dict,
             activity=activity,
             zones=zones,
-            max_hr=max_hr,
+            hr_basis=hr_basis,
         )
 
         await status_msg.delete()

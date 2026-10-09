@@ -11,6 +11,7 @@ from database import async_session_maker
 from services.coach_service import zones_for_profile
 from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
 from services.garmin_workouts import build_workout, export_days, split_previous
+from services.heart_rate import profile_hr_basis
 from services.plan_renderer import DAY_NAMES, TYPE_LABELS
 from services.plan_storage import parse_week
 from services.user_service import UserService
@@ -51,8 +52,8 @@ async def handle_garmin_export(callback: CallbackQuery, garmin: GarminClient) ->
         return
 
     zones = zones_for_profile(profile)
-    max_hr = getattr(profile, "max_heart_rate", None)
-    workouts = [(when.isoformat(), build_workout(day, zones, max_hr)) for when, day in days]
+    hr_basis = profile_hr_basis(profile)
+    workouts = [(when.isoformat(), build_workout(day, zones, hr_basis)) for when, day in days]
     replace_ids, keep = split_previous(weekly.garmin_workouts, today)
 
     await callback.answer("Выгружаю в Garmin...")

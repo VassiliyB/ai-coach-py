@@ -18,6 +18,7 @@ from models.user import AppUser
 from schemas.plan import MacroPlan
 from services.activity_poller import ActivityPoller
 from services.coach_service import TrainingZones, build_profile_context, calculate_zones, zones_for_profile
+from services.heart_rate import HrRef, profile_hr_basis
 from services.macro_replan import (
     REPLAN_WINDOW_DAYS,
     adjustment_after_replan,
@@ -109,8 +110,8 @@ class TrainingSchedulerService:
         week_start, week_end = monday.strftime(DATE_FORMAT), sunday.strftime(DATE_FORMAT)
         await self._review_vdot(user, plan, profile, week_number, today)  # обновляет profile.vdot
         zones = zones_for_profile(profile)
-        max_hr = getattr(profile, "max_heart_rate", None)
-        adjustment, macro = await self._adapt_week(user, plan, macro, week_number, today, zones, max_hr)
+        hr_basis = profile_hr_basis(profile)
+        adjustment, macro = await self._adapt_week(user, plan, macro, week_number, today, zones, hr_basis)
         logger.info(
             "Генерация недели для user_id=%s (chat_id=%s): №%d из %d (%s - %s)",
             user.id, user.telegram_chat_id, week_number, macro.total_weeks, week_start, week_end,
@@ -139,7 +140,7 @@ class TrainingSchedulerService:
                 plan=week,
             )
 
-        # 3. Текст собирает код: темп по VDOT, пульс по ЧССmax, текст модели экранирован
+        # 3. Текст собирает код: темп по VDOT, пульс по ЧССmax или ПАНО, текст модели экранирован
         text = render_week(
             week,
             target_race=plan.target_race,
@@ -149,7 +150,7 @@ class TrainingSchedulerService:
             week_end=week_end,
             phase=macro.phase_for_week(week_number),
             zones=zones,
-            max_hr=max_hr,
+            hr_basis=hr_basis,
             adjustment=adjustment,
         )
         # Кнопка выгрузки в календарь Garmin под последней частью расписания
@@ -207,7 +208,7 @@ class TrainingSchedulerService:
         week_number: int,
         today: date,
         zones: Optional[TrainingZones],
-        max_hr: Optional[int],
+        hr_basis: HrRef,
     ) -> Tuple[Optional[WeekAdjustment], MacroPlan]:
         """Адаптация по факту: поправка следующей недели (уровень 1) и пересчёт макроплана по событиям (уровень 3).
 
@@ -236,7 +237,7 @@ class TrainingSchedulerService:
             return None, macro
 
         runs = run_facts(facts["runs"])
-        review = review_week(planned, current_monday, runs, today, zones, max_hr) if planned else None
+        review = review_week(planned, current_monday, runs, today, zones, hr_basis) if planned else None
         if weekly is not None and review is not None and review.compliance is not None:
             async with async_session_maker() as session:
                 await UserService.set_week_review(session, weekly.id, review_to_dict(review))

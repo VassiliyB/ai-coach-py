@@ -10,6 +10,7 @@ from config import settings
 from services.activity_zones import classify_activity, format_activity_zones
 from services.coach_qa import CONCEPT_NAMES, MAX_SEARCH_TERMS, SearchTerms, fallback_terms
 from services.coach_service import TrainingZones
+from services.heart_rate import HrRef
 from services.message_service import MessageService
 from services.plan_generator import LLMClient, parse_json_object
 
@@ -109,15 +110,15 @@ class AICoachService:
         athlete_profile: Dict[str, Any],
         activity: Dict[str, Any],
         zones: Optional[TrainingZones] = None,
-        max_hr: Optional[int] = None,
+        hr_basis: HrRef = None,
     ) -> str:
         """Экспресс-анализ завершённой пробежки. Зону по темпу и пульсу считает код, модель интерпретирует."""
         # Зона по темпу имеет смысл только для бега: темп велосипеда или ходьбы с зонами Дэниелса не сравнить
         pace_sec = activity.get("avg_pace_sec") if activity.get("is_running") else None
         avg_hr = activity.get("avg_heart_rate")
-        result = classify_activity(pace_sec, avg_hr, zones, max_hr)
+        result = classify_activity(pace_sec, avg_hr, zones, hr_basis)
         zones_block = format_activity_zones(
-            result, pace_sec, avg_hr, zones, max_hr, peak_hr=activity.get("max_heart_rate"),
+            result, pace_sec, avg_hr, zones, hr_basis, peak_hr=activity.get("max_heart_rate"),
         )
         user_prompt = (
             "Проведи быстрый разбор завершённой тренировки атлета.\n"

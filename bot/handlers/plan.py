@@ -19,6 +19,7 @@ from bot.states import PlanCreationStates
 from clients.ai_client import AIClientError
 from database import async_session_maker
 from services.coach_service import MAX_VDOT, MIN_VDOT, TrainingZones, build_profile_context, zones_for_profile
+from services.heart_rate import HrRef, profile_hr_basis
 from services.message_service import MessageService
 from services.plan_calendar import intro_days, monday_of, plan_total_weeks
 from services.plan_generator import PlanGenerationError, PlanGenerator
@@ -282,7 +283,7 @@ async def _create_plan(
         weekly_km = getattr(profile, "average_weekly_km", None) or macro.weekly_km[0]
         await _send_intro_days(
             message, plan_generator, profile_dict, target_race, today,
-            weekly_km=weekly_km, zones=zones, max_hr=getattr(profile, "max_heart_rate", None),
+            weekly_km=weekly_km, zones=zones, hr_basis=profile_hr_basis(profile),
             user_id=user_id, plan_id=saved.id, garmin_linked=garmin_linked,
         )
 
@@ -309,7 +310,7 @@ async def _send_intro_days(
     *,
     weekly_km: float,
     zones: Optional[TrainingZones],
-    max_hr: Optional[int],
+    hr_basis: HrRef,
     user_id: int,
     plan_id: int,
     garmin_linked: bool,
@@ -332,7 +333,7 @@ async def _send_intro_days(
                 week_start=monday_of(today), week_end=days[-1], plan=week,
             )
         await status_msg.delete()
-        text = render_intro_days(week, days, zones=zones, max_hr=max_hr)
+        text = render_intro_days(week, days, zones=zones, hr_basis=hr_basis)
         chunks = MessageService.chunk_message(text)
         markup = get_garmin_export_keyboard(weekly.id) if garmin_linked else None
         for i, chunk in enumerate(chunks):
