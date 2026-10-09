@@ -40,6 +40,18 @@ def get_target_distances_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+ACCESS_APPROVE_PREFIX = "access:approve:"
+ACCESS_REJECT_PREFIX = "access:reject:"
+
+
+def get_access_request_keyboard(chat_id: int) -> InlineKeyboardMarkup:
+    """Кнопки админу под запросом доступа нового пользователя."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Пустить", callback_data=f"{ACCESS_APPROVE_PREFIX}{chat_id}"),
+        InlineKeyboardButton(text="⛔ Отказать", callback_data=f"{ACCESS_REJECT_PREFIX}{chat_id}"),
+    ]])
+
+
 DELETE_CONFIRM = "delete_me:confirm"
 DELETE_CANCEL = "delete_me:cancel"
 

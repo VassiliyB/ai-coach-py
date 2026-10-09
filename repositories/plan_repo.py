@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
 from models.base import utcnow
+from models.user import ACCESS_APPROVED
 
 
 class PlanRepository:
@@ -43,7 +44,9 @@ class PlanRepository:
             select(AppUser, TrainingPlan, AthleteProfile)
             .join(TrainingPlan, TrainingPlan.user_id == AppUser.id)
             .outerjoin(AthleteProfile, AthleteProfile.user_id == AppUser.id)
-            .where(TrainingPlan.active.is_(True), AppUser.garmin_linked.is_(True))
+            .where(
+                TrainingPlan.active.is_(True), AppUser.garmin_linked.is_(True), AppUser.access == ACCESS_APPROVED,
+            )
         )
         return list((await self.session.execute(stmt)).tuples().all())
 

@@ -5,18 +5,21 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from bot.handlers import access as access_handlers
 from bot.handlers import analyze, ask, garmin_export, plan, show_plan, start, sync
 from bot.handlers import settings as settings_handlers
-from bot.middlewares import UserLockMiddleware
+from bot.middlewares import AccessMiddleware, UserLockMiddleware
 from clients.garmin import GarminClient
 from clients.llm import create_llm_client
 from config import settings
-from database import engine, run_migrations
+from database import async_session_maker, engine, run_migrations
+from services.access_control import AccessControl
 from services.activity_poller import ActivityPoller
 from services.ai_coach_service import AICoachService
 from services.plan_generator import PlanGenerator
 from services.scheduler_service import TrainingSchedulerService
 from services.user_locks import UserLocks
+from services.user_service import UserService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,6 +42,12 @@ async def main() -> None:
     logger.info("Провайдер LLM: %s", settings.LLM_PROVIDER)
     ai_coach = AICoachService(ai_client=ai_client)
     plan_generator = PlanGenerator(ai_client=ai_client)
+    # Доступ по одобрению админа: одобренные загружаются в память, чтобы не читать БД на каждое сообщение
+    access = AccessControl(settings.ADMIN_CHAT_IDS)
+    async with async_session_maker() as session:
+        access.load(await UserService.load_approved(session, settings.ADMIN_CHAT_IDS))
+    if not settings.ADMIN_CHAT_IDS:
+        logger.warning("ADMIN_CHAT_IDS не задан: новых пользователей одобрить некому")
     user_locks = UserLocks()  # одна тяжёлая операция на пользователя: команды, опрос, рассылка
     activity_poller = ActivityPoller(bot=bot, garmin=garmin_client, ai_coach=ai_coach, locks=user_locks)
     scheduler_service = TrainingSchedulerService(
@@ -56,7 +65,11 @@ async def main() -> None:
         plan_generator=plan_generator,
         scheduler_service=scheduler_service,
         user_locks=user_locks,
+        access=access,
     )
+
+    # Внешний middleware на все обновления: без доступа событие не доходит до роутеров
+    dp.update.outer_middleware(AccessMiddleware(access))
 
     # Хендлеры с флагом user_lock не запускаются, пока у пользователя идёт другая тяжёлая операция.
     # Внутренний middleware: флаги хендлера видны только после его выбора; применяется ко всем роутерам
@@ -65,6 +78,7 @@ async def main() -> None:
     dp.callback_query.middleware(lock_middleware)
 
     # 4. Роутеры. Порядок важен: команды раньше общих хендлеров состояний.
+    dp.include_router(access_handlers.router)   # только для админов (фильтр роутера)
     dp.include_router(start.router)
     dp.include_router(sync.router)
     dp.include_router(analyze.router)

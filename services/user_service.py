@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
+from models.user import ACCESS_APPROVED, ACCESS_PENDING
 from repositories import ActivityRepository, PlanRepository, UserRepository
 from schemas.plan import MacroPlan, WeekPlan
 from services.plan_storage import plan_to_details
@@ -22,9 +23,43 @@ class UserService:
         session: AsyncSession, chat_id: int,
         username: Optional[str] = None, first_name: Optional[str] = None,
     ) -> AppUser:
-        user = await UserRepository(session).get_or_create(chat_id, username, first_name)
+        """Для хендлеров: до них доходят только допущенные (AccessMiddleware), новая запись сразу с доступом.
+
+        Новая запись здесь бывает у админа при первом обращении.
+        """
+        user, _ = await UserRepository(session).get_or_create(chat_id, username, first_name, access=ACCESS_APPROVED)
         await session.commit()
         return user
+
+    @staticmethod
+    async def request_access(
+        session: AsyncSession, chat_id: int, username: Optional[str], first_name: Optional[str],
+    ) -> Tuple[AppUser, bool]:
+        """Запись пользователя без доступа (pending). True, если запрос новый и о нём надо сообщить админам."""
+        user, created = await UserRepository(session).get_or_create(
+            chat_id, username, first_name, access=ACCESS_PENDING,
+        )
+        await session.commit()
+        return user, created
+
+    @staticmethod
+    async def set_access(session: AsyncSession, chat_id: int, access: str) -> Optional[AppUser]:
+        user = await UserRepository(session).set_access(chat_id, access)
+        await session.commit()
+        return user
+
+    @staticmethod
+    async def load_approved(session: AsyncSession, admin_ids: Iterable[int]) -> List[int]:
+        """При старте: админы из настроек получают доступ и в БД (иначе фоновые задачи их пропустят),
+        возвращает всех одобренных."""
+        repo = UserRepository(session)
+        await repo.approve_existing(admin_ids)
+        await session.commit()
+        return await repo.approved_chat_ids()
+
+    @staticmethod
+    async def list_users(session: AsyncSession) -> List[AppUser]:
+        return await UserRepository(session).list_all()
 
     @staticmethod
     async def delete_user(session: AsyncSession, chat_id: int) -> bool:

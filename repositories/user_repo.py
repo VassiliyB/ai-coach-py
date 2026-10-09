@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AppUser, AthleteProfile
 from models.base import utcnow
+from models.user import ACCESS_APPROVED, ACCESS_PENDING
 
 
 class UserRepository:
@@ -18,21 +19,55 @@ class UserRepository:
         return result.scalar_one_or_none()
 
     async def get_or_create(
-        self, chat_id: int, username: Optional[str] = None, first_name: Optional[str] = None
-    ) -> AppUser:
-        """Атомарно: INSERT ... ON CONFLICT DO NOTHING, затем SELECT. Без гонок при двух /start."""
-        await self.session.execute(
+        self, chat_id: int, username: Optional[str] = None, first_name: Optional[str] = None,
+        access: str = ACCESS_PENDING,
+    ) -> Tuple[AppUser, bool]:
+        """Атомарно: INSERT ... ON CONFLICT DO NOTHING, затем SELECT. Без гонок при двух /start.
+
+        access задаёт статус только новой записи. Второе значение: True, если запись создана сейчас.
+        """
+        inserted = await self.session.execute(
             pg_insert(AppUser)
-            .values(telegram_chat_id=chat_id, username=username, first_name=first_name, garmin_linked=False)
+            .values(
+                telegram_chat_id=chat_id, username=username, first_name=first_name,
+                garmin_linked=False, access=access,
+            )
             .on_conflict_do_nothing(index_elements=[AppUser.telegram_chat_id])
+            .returning(AppUser.id)
         )
+        created = inserted.scalar_one_or_none() is not None
         user = await self.get_by_chat_id(chat_id)
         assert user is not None
         # Актуализируем имя, если человек сменил его в Telegram
         if (username, first_name) != (None, None) and (user.username, user.first_name) != (username, first_name):
             user.username, user.first_name = username, first_name
             await self.session.flush()
-        return user
+        return user, created
+
+    async def set_access(self, chat_id: int, access: str) -> Optional[AppUser]:
+        """Новый статус доступа; None, если пользователя нет."""
+        stmt = (
+            update(AppUser).where(AppUser.telegram_chat_id == chat_id).values(access=access)
+            .returning(AppUser).execution_options(populate_existing=True)
+        )
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
+    async def approve_existing(self, chat_ids: Iterable[int]) -> None:
+        """Одобряет уже существующие записи (админов из настроек); новых не создаёт."""
+        ids = list(chat_ids)
+        if ids:
+            await self.session.execute(
+                update(AppUser)
+                .where(AppUser.telegram_chat_id.in_(ids), AppUser.access != ACCESS_APPROVED)
+                .values(access=ACCESS_APPROVED)
+            )
+
+    async def approved_chat_ids(self) -> List[int]:
+        stmt = select(AppUser.telegram_chat_id).where(AppUser.access == ACCESS_APPROVED)
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def list_all(self) -> List[AppUser]:
+        return list((await self.session.execute(select(AppUser).order_by(AppUser.id))).scalars().all())
 
     async def set_garmin_linked(self, chat_id: int, linked: bool) -> None:
         await self.session.execute(
@@ -44,7 +79,7 @@ class UserRepository:
         stmt = (
             select(AppUser, AthleteProfile)
             .outerjoin(AthleteProfile, AthleteProfile.user_id == AppUser.id)
-            .where(AppUser.garmin_linked.is_(True))
+            .where(AppUser.garmin_linked.is_(True), AppUser.access == ACCESS_APPROVED)
             .order_by(AppUser.id)
         )
         return list((await self.session.execute(stmt)).tuples().all())

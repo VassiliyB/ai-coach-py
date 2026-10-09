@@ -1,8 +1,8 @@
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Корень проекта: папка, где лежит этот файл
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,6 +16,9 @@ class Settings(BaseSettings):
 
     # Telegram
     TELEGRAM_BOT_TOKEN: SecretStr = Field(..., description="Токен Telegram бота от BotFather")
+    # Админы бота: chat_id через запятую. Одобряют новых пользователей, сами имеют доступ всегда.
+    # Пусто: новых пользователей одобрить некому, ботом пользуются только уже одобренные
+    ADMIN_CHAT_IDS: Annotated[frozenset[int], NoDecode] = frozenset()
 
     # LLM: провайдер выбирается здесь, остальной код работает через общий интерфейс generate_response
     LLM_PROVIDER: Literal["groq", "claude"] = "groq"
@@ -49,6 +52,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("ADMIN_CHAT_IDS", mode="before")
+    @classmethod
+    def _split_ids(cls, value: object) -> object:
+        """'123, 456' из .env -> {123, 456} (без NoDecode pydantic-settings ждал бы JSON)."""
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
 
     @field_validator("GARMIN_TOKENS_DIR", "KNOWLEDGE_BASE_PATH")
     @classmethod

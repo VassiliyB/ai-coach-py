@@ -10,6 +10,7 @@ from aiogram.types import CallbackQuery, Message
 from bot.keyboards import DELETE_CANCEL, DELETE_CONFIRM, get_delete_confirm_keyboard
 from clients.garmin import GarminClient
 from database import async_session_maker
+from services.access_control import AccessControl
 from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import local_now, normalize_timezone
@@ -84,6 +85,7 @@ async def handle_delete_me(message: Message) -> None:
 @router.callback_query(F.data == DELETE_CONFIRM)
 async def handle_delete_confirm(
     callback: CallbackQuery, state: FSMContext, garmin: GarminClient, user_locks: UserLocks,
+    access: AccessControl,
 ) -> None:
     """Удаляет пользователя из БД (остальное каскадом), токены Garmin и состояние диалога."""
     chat_id = callback.message.chat.id
@@ -101,6 +103,8 @@ async def handle_delete_confirm(
                 existed = await UserService.delete_user(session, chat_id)
             await garmin.clear_session(chat_id)
             await state.clear()
+            if not access.is_admin(chat_id):   # запись о доступе удалена вместе с остальным
+                access.revoke(chat_id)
         except Exception:
             logger.exception("Ошибка удаления данных (chat_id=%s)", chat_id)
             await callback.answer("Не удалось удалить данные. Попробуйте ещё раз.", show_alert=True)
