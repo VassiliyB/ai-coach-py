@@ -103,3 +103,48 @@ def test_rate_limit_on_delete_stops_export(tmp_path, monkeypatch):
     with pytest.raises(GarminRateLimitError):
         with_api(tmp_path, monkeypatch, api)._schedule_workouts_sync(1, [("2026-10-13", {})], [7])
     assert api.uploaded == []
+
+
+# ---------- факт недели и восстановление ----------
+
+class FactsApi:
+    def __init__(self, hrv_error=None):
+        self.hrv_error = hrv_error
+
+    def get_activities_by_date(self, start, end, activitytype):
+        assert activitytype == "running"
+        return [{"activityId": 1, "activityType": {"typeKey": "running"}, "distance": 8000, "duration": 2640,
+                 "startTimeLocal": "2026-10-13 07:00:00"}]
+
+    def get_hrv_data(self, day):
+        if self.hrv_error:
+            raise self.hrv_error
+        return {"hrvSummary": {"status": "LOW"}}
+
+    def get_training_readiness(self, day):
+        return [{"score": 45}]
+
+
+def test_week_facts(tmp_path, monkeypatch):
+    from datetime import date
+
+    client = with_api(tmp_path, monkeypatch, FactsApi())
+    facts = client._fetch_week_facts_sync(1, date(2026, 10, 12), date(2026, 10, 18))
+    assert facts["runs"][0]["distance_km"] == 8.0
+    assert facts["hrv_status"] == "LOW" and facts["readiness"] == 45
+
+
+def test_week_facts_without_hrv_device(tmp_path, monkeypatch):
+    from datetime import date
+
+    api = FactsApi(hrv_error=GarminConnectConnectionError("404"))
+    facts = with_api(tmp_path, monkeypatch, api)._fetch_week_facts_sync(1, date(2026, 10, 12), date(2026, 10, 18))
+    assert facts["hrv_status"] is None and facts["readiness"] == 45
+
+
+def test_week_facts_rate_limit_propagates(tmp_path, monkeypatch):
+    from datetime import date
+
+    api = FactsApi(hrv_error=GarminConnectTooManyRequestsError("429"))
+    with pytest.raises(GarminRateLimitError):
+        with_api(tmp_path, monkeypatch, api)._fetch_week_facts_sync(1, date(2026, 10, 12), date(2026, 10, 18))

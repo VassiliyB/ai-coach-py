@@ -219,3 +219,16 @@ def test_overview_before_start_and_after_race():
 def test_overview_legacy_plan_and_escaping():
     text = overview(macro=None, target_race="<b>x</b>")
     assert "старом формате" in text and "&lt;b&gt;x&lt;/b&gt;" in text
+
+
+def test_week_shows_adjustment():
+    from services.week_adaptation import WeekAdjustment
+
+    adj = WeekAdjustment(
+        target_km=30, max_quality=1, reasons=["признаки <усталости>"], summary="Прошлая неделя: 20 из 38 км",
+    )
+    text = render(make_week(), adjustment=adj)
+    assert "📊 Прошлая неделя: 20 из 38 км" in text
+    assert "🔄 <b>Корректировка:</b>" in text and "&lt;усталости&gt;" in text
+    assert_balanced(text)
+    assert "Корректировка" not in render(make_week(), adjustment=WeekAdjustment(target_km=30))

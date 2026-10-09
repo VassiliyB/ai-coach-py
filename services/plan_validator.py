@@ -49,11 +49,13 @@ def validate_week(
     target_km: Optional[float] = None,
     phase_number: Optional[int] = None,
     zones: Optional[TrainingZones] = None,
+    max_quality: Optional[int] = None,
 ) -> List[str]:
     """Проверяет недельный микроцикл.
 
     target_km: плановый километраж недели из макроплана; phase_number: номер фазы (1-4) для правил фазы;
-    zones: зоны темпа атлета, без них потолок длительного бега по времени не проверяется.
+    zones: зоны темпа атлета, без них потолок длительного бега по времени не проверяется;
+    max_quality: предел качественных тренировок из корректировки по факту прошлой недели (week_adaptation).
     """
     problems: List[str] = []
     total = week.total_km
@@ -108,6 +110,10 @@ def validate_week(
     if quality_count > MAX_QUALITY_SESSIONS:
         problems.append(
             f"слишком много качественных тренировок: {quality_count} (максимум {MAX_QUALITY_SESSIONS})"
+        )
+    elif max_quality is not None and quality_count > max_quality:
+        problems.append(
+            f"качественных тренировок {quality_count}, а после прошлой недели допустимо не больше {max_quality}"
         )
     rest_days = sum(1 for d in week.days if d.type in (WorkoutType.REST, WorkoutType.CROSS))
     if rest_days < MIN_REST_DAYS:

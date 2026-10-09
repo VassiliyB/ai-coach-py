@@ -44,6 +44,7 @@ async def main() -> None:
     scheduler_service = TrainingSchedulerService(
         bot=bot, plan_generator=plan_generator,
         activity_poller=activity_poller, poll_minutes=settings.ACTIVITY_POLL_MINUTES, locks=user_locks,
+        garmin=garmin_client,
     )
 
     # 3. Диспетчер: именованные аргументы становятся зависимостями хендлеров (DI).

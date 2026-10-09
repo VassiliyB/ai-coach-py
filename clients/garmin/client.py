@@ -10,7 +10,7 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 
-from .analytics import aggregate_profile_90d, parse_last_activity
+from .analytics import aggregate_profile_90d, parse_hrv_status, parse_last_activity, parse_training_readiness
 from .exceptions import GarminAuthError, GarminClientError, GarminRateLimitError
 from .token_storage import GarminTokenStorage
 
@@ -202,6 +202,25 @@ class GarminClient:
             raise
         return created
 
+    def _fetch_week_facts_sync(self, chat_id: int, start: date, end: date) -> Dict[str, Any]:
+        client = self._init_session_sync(chat_id)
+        raw_runs = self._api_call(client.get_activities_by_date, start.isoformat(), end.isoformat(), "running")
+        runs = [parse_last_activity(act) for act in raw_runs or []]
+
+        # Показатели восстановления есть не на всех часах: их отсутствие не ошибка
+        signals: Dict[str, Any] = {"hrv_status": None, "readiness": None}
+        for key, func, parser in (
+            ("hrv_status", client.get_hrv_data, parse_hrv_status),
+            ("readiness", client.get_training_readiness, parse_training_readiness),
+        ):
+            try:
+                signals[key] = parser(self._api_call(func, end.isoformat()))
+            except (GarminRateLimitError, GarminAuthError):
+                raise
+            except GarminClientError as exc:
+                logger.info("Нет данных %s для chat_id=%s: %s", key, chat_id, exc)
+        return {"runs": runs, **signals}
+
     # ---------------- Публичный асинхронный интерфейс ----------------
 
     async def login_start(self, chat_id: int, email: str, password: str) -> str:
@@ -232,6 +251,13 @@ class GarminClient:
         Возвращает [{"date", "workout_id"}]. При ошибке уже загруженные в этом вызове удаляются.
         """
         return await asyncio.to_thread(self._schedule_workouts_sync, chat_id, workouts, replace_ids or [])
+
+    async def get_week_facts(self, chat_id: int, start: date, end: date) -> Dict[str, Any]:
+        """Факт за период: беговые тренировки (формат parse_last_activity), статус HRV и готовность на дату end.
+
+        Возвращает {"runs": [...], "hrv_status": str | None, "readiness": int | None}.
+        """
+        return await asyncio.to_thread(self._fetch_week_facts_sync, chat_id, start, end)
 
     async def clear_session(self, chat_id: int) -> None:
         """Забывает пользователя: незавершённый вход по MFA в памяти и файл токенов на диске."""

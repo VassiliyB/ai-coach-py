@@ -88,3 +88,11 @@ class PlanRepository:
         await self.session.execute(
             update(TrainingPlan).where(TrainingPlan.id == plan_id).values(target_time_s=target_time_s)
         )
+
+    async def get_weekly_by_start(self, training_plan_id: int, week_start: date) -> Optional[WeeklyPlan]:
+        result = await self.session.execute(
+            select(WeeklyPlan).where(
+                WeeklyPlan.training_plan_id == training_plan_id, WeeklyPlan.week_start_date == week_start,
+            )
+        )
+        return result.scalar_one_or_none()

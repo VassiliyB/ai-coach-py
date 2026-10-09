@@ -142,3 +142,27 @@ def aggregate_profile_90d(
         "utc_offset": detect_utc_offset(activities),
         "summary_text": summary_text,
     }
+
+
+# ---------------- Восстановление (HRV, готовность к тренировкам) ----------------
+
+HRV_STATUSES = {"BALANCED", "UNBALANCED", "LOW", "POOR"}
+
+
+def parse_hrv_status(raw: Any) -> Optional[str]:
+    """Статус HRV за ночь ('BALANCED', 'UNBALANCED', 'LOW', 'POOR'). None, если часы HRV не считают."""
+    if not isinstance(raw, dict):
+        return None
+    summary = raw.get("hrvSummary") or {}
+    status = str(summary.get("status") or "").upper()
+    return status if status in HRV_STATUSES else None
+
+
+def parse_training_readiness(raw: Any) -> Optional[int]:
+    """Готовность к тренировкам 0–100 за день: самая свежая запись. None, если данных нет."""
+    entries = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    scored = [e for e in entries if isinstance(e, dict) and isinstance(e.get("score"), (int, float))]
+    if not scored:
+        return None
+    latest = max(scored, key=lambda e: str(e.get("timestamp") or e.get("timestampLocal") or ""))
+    return int(latest["score"])

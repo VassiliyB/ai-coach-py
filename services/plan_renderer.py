@@ -8,6 +8,7 @@ from typing import List, Optional
 from schemas.plan import MacroPlan, Phase, PlannedDay, WeekPlan, WorkoutType
 from services.coach_service import TrainingZones
 from services.plan_paces import estimate_duration_min, hr_text, pace_text
+from services.week_adaptation import WeekAdjustment
 
 DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 SEP = " · "
@@ -94,8 +95,12 @@ def render_week(
     phase: Optional[Phase] = None,
     zones: Optional[TrainingZones] = None,
     max_hr: Optional[int] = None,
+    adjustment: Optional[WeekAdjustment] = None,
 ) -> str:
-    """Недельное расписание. week_start и week_end приходят уже отформатированными строками."""
+    """Недельное расписание. week_start и week_end приходят уже отформатированными строками.
+
+    adjustment: поправка по факту прошлой недели; показывается, если она что-то изменила.
+    """
     lines = [
         f"📋 <b>Неделя №{week_number} из {total_weeks}</b>{SEP}{_e(week_start)} – {_e(week_end)}",
         f"🎯 Цель: <b>{_e(target_race)}</b>",
@@ -108,6 +113,14 @@ def render_week(
     if quality:
         summary += f"{SEP}рабочая часть качественных: {_km(quality)} км"
     lines += [summary, ""]
+
+    if adjustment is not None and (adjustment.changed or adjustment.summary):
+        if adjustment.summary:
+            lines.append(f"📊 {_e(adjustment.summary)}")
+        if adjustment.changed:
+            lines.append("🔄 <b>Корректировка:</b>")
+            lines += [f"• {_e(reason)}" for reason in adjustment.reasons]
+        lines.append("")
 
     blocks = [_render_day(d, zones, max_hr) for d in week.days]
     lines.append("\n\n".join(blocks))

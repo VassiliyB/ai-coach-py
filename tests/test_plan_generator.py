@@ -294,3 +294,48 @@ def test_macro_prompt_includes_goal_only_when_given():
     without, with_goal = (c["messages"][-1]["content"] for c in ai.calls)
     assert "Целевое время" not in without
     assert "Целевое время: 1:45:00" in with_goal
+
+
+# ---------- корректировка по факту прошлой недели ----------
+
+def test_week_adjustment_replaces_target_and_goes_to_prompt():
+    from services.week_adaptation import WeekAdjustment
+
+    macro = MacroPlan.model_validate(macro_data())
+    adj = WeekAdjustment(
+        target_km=36, max_quality=1, reasons=["признаки усталости"], summary="Прошлая неделя: 20 из 38 км",
+    )
+    gen, ai = generator([dumps(good_week_data())])
+    asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", adjustment=adj))
+    prompt = ai.calls[0]["messages"][-1]["content"]
+    assert "Плановый километраж недели: 36 км" in prompt       # вместо 38 из макроплана
+    assert "КОРРЕКТИРОВКА" in prompt and "признаки усталости" in prompt
+    assert "не больше 1." in prompt
+
+
+def test_week_adjustment_quality_limit_triggers_retry():
+    from services.week_adaptation import WeekAdjustment
+
+    macro = MacroPlan.model_validate(macro_data())
+    adj = WeekAdjustment(target_km=36, max_quality=0, reasons=["перерыв"])
+    no_quality = good_week_data()
+    no_quality["days"] = [
+        {"day": d["day"], "type": "easy", "distance_km": d["distance_km"]}
+        if d["type"] in ("threshold", "interval", "repetition", "marathon") else d
+        for d in no_quality["days"]
+    ]
+    gen, ai = generator([dumps(good_week_data()), dumps(no_quality)])
+    week = asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", adjustment=adj))
+    assert len(ai.calls) == 2                                    # первая неделя с качественной отклонена
+    assert all(d.type.value != "threshold" for d in week.days)
+
+
+def test_unchanged_adjustment_adds_nothing_to_prompt():
+    from services.week_adaptation import WeekAdjustment
+
+    macro = MacroPlan.model_validate(macro_data())
+    gen, ai = generator([dumps(good_week_data())])
+    asyncio.run(gen.generate_week(
+        PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", adjustment=WeekAdjustment(target_km=38),
+    ))
+    assert "КОРРЕКТИРОВКА" not in ai.calls[0]["messages"][-1]["content"]

@@ -10,20 +10,29 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from bot.keyboards import get_garmin_export_keyboard
+from clients.garmin import GarminClient, GarminClientError
 from database import async_session_maker
 from models.athlete_profile import AthleteProfile
 from models.training_plan import TrainingPlan
 from models.user import AppUser
+from schemas.plan import MacroPlan
 from services.activity_poller import ActivityPoller
-from services.coach_service import build_profile_context, zones_for_profile
+from services.coach_service import TrainingZones, build_profile_context, zones_for_profile
 from services.message_service import MessageService
-from services.plan_calendar import DATE_FORMAT, next_week_dates, plan_week_number
-from services.plan_generator import PlanGenerator
+from services.plan_calendar import DATE_FORMAT, monday_of, next_week_dates, plan_week_number
+from services.plan_generator import PlanGenerator, target_km_for_week
 from services.plan_renderer import render_week
-from services.plan_storage import parse_macro
+from services.plan_storage import parse_macro, parse_week
 from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now, local_today
+from services.week_adaptation import (
+    RecoverySignals,
+    WeekAdjustment,
+    adjust_next_week,
+    review_week,
+    run_facts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +58,14 @@ class TrainingSchedulerService:
         activity_poller: Optional[ActivityPoller] = None,
         poll_minutes: int = 0,
         locks: Optional[UserLocks] = None,
+        garmin: Optional[GarminClient] = None,
     ) -> None:
-        """activity_poller и poll_minutes > 0 включают опрос Garmin с этим интервалом."""
+        """activity_poller и poll_minutes > 0 включают опрос Garmin с этим интервалом.
+
+        garmin: для корректировки недели по факту прошлой; без него недели строятся строго по макроплану.
+        """
         self.bot = bot
+        self.garmin = garmin
         self.plan_generator = plan_generator
         self.activity_poller = activity_poller if poll_minutes > 0 else None
         self.poll_minutes = poll_minutes
@@ -74,7 +88,8 @@ class TrainingSchedulerService:
             await self.bot.send_message(user.telegram_chat_id, LEGACY_PLAN_NOTICE, parse_mode="HTML")
             return WeekStatus.LEGACY_PLAN
 
-        monday, sunday = next_week_dates(today or local_today(UserService.timezone_of(user)))
+        today = today or local_today(UserService.timezone_of(user))
+        monday, sunday = next_week_dates(today)
         week_number = plan_week_number(plan.race_date, macro.total_weeks, monday)
         if week_number is None:
             logger.info("План user_id=%s завершён: забег %s уже прошёл", user.id, plan.race_date)
@@ -82,6 +97,8 @@ class TrainingSchedulerService:
 
         week_start, week_end = monday.strftime(DATE_FORMAT), sunday.strftime(DATE_FORMAT)
         zones = zones_for_profile(profile)
+        max_hr = getattr(profile, "max_heart_rate", None)
+        adjustment = await self._week_adjustment(user, plan.id, macro, week_number, today, zones, max_hr)
         logger.info(
             "Генерация недели для user_id=%s (chat_id=%s): №%d из %d (%s - %s)",
             user.id, user.telegram_chat_id, week_number, macro.total_weeks, week_start, week_end,
@@ -96,6 +113,7 @@ class TrainingSchedulerService:
             week_start=week_start,
             week_end=week_end,
             zones=zones,
+            adjustment=adjustment,
         )
 
         # 2. Сохранение (повторная генерация той же недели перезаписывает запись)
@@ -119,7 +137,8 @@ class TrainingSchedulerService:
             week_end=week_end,
             phase=macro.phase_for_week(week_number),
             zones=zones,
-            max_hr=getattr(profile, "max_heart_rate", None),
+            max_hr=max_hr,
+            adjustment=adjustment,
         )
         # Кнопка выгрузки в календарь Garmin под последней частью расписания
         chunks = MessageService.chunk_message(text)
@@ -130,6 +149,51 @@ class TrainingSchedulerService:
                 reply_markup=markup if i == len(chunks) - 1 else None,
             )
         return WeekStatus.SENT
+
+    async def _week_adjustment(
+        self,
+        user: AppUser,
+        plan_id: int,
+        macro: MacroPlan,
+        week_number: int,
+        today: date,
+        zones: Optional[TrainingZones],
+        max_hr: Optional[int],
+    ) -> Optional[WeekAdjustment]:
+        """Поправка следующей недели по факту текущей (план в БД против пробежек Garmin) и восстановлению.
+
+        None, если данных Garmin нет: неделя строится по макроплану. Сбой здесь рассылку не останавливает.
+        """
+        chat_id = user.telegram_chat_id
+        if self.garmin is None or not user.garmin_linked or not self.garmin.has_saved_tokens(chat_id):
+            return None
+        current_monday = monday_of(today)
+        try:
+            facts = await self.garmin.get_week_facts(chat_id, current_monday, today)
+            async with async_session_maker() as session:
+                weekly = await UserService.get_weekly_plan_by_start(session, plan_id, current_monday)
+            planned = parse_week(weekly.plan_details) if weekly else None
+        except GarminClientError as exc:
+            logger.warning("Факт недели из Garmin не получен (chat_id=%s): %s", chat_id, exc)
+            return None
+        except Exception:
+            logger.exception("Ошибка подготовки корректировки недели (chat_id=%s)", chat_id)
+            return None
+
+        review = (
+            review_week(planned, current_monday, run_facts(facts["runs"]), today, zones, max_hr)
+            if planned else None
+        )
+        adjustment = adjust_next_week(
+            target_km_for_week(macro, week_number), review,
+            RecoverySignals(hrv_status=facts.get("hrv_status"), readiness=facts.get("readiness")),
+        )
+        if adjustment.changed:
+            logger.info(
+                "Корректировка недели (chat_id=%s): %s км, качественных не больше %s; %s",
+                chat_id, adjustment.target_km, adjustment.max_quality, adjustment.reasons,
+            )
+        return adjustment
 
     async def weekly_distribution_tick(self, now_utc: Optional[datetime] = None) -> int:
         """Ежечасная проверка: отправляет неделю тем, у кого по их поясу воскресенье и уже 15:00.

@@ -105,6 +105,12 @@ class UserService:
         return weekly
 
     @staticmethod
+    async def get_weekly_plan_by_start(
+        session: AsyncSession, training_plan_id: int, week_start: date,
+    ) -> Optional[WeeklyPlan]:
+        return await PlanRepository(session).get_weekly_by_start(training_plan_id, week_start)
+
+    @staticmethod
     async def get_weekly_plan(session: AsyncSession, weekly_id: int, user_id: int) -> Optional[WeeklyPlan]:
         return await PlanRepository(session).get_weekly(weekly_id, user_id)
 

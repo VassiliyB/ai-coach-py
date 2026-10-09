@@ -13,6 +13,7 @@ from schemas.plan import PHASE_NAMES, MacroPlan, WeekPlan, WorkoutType
 from services import plan_validator as rules
 from services.coach_service import TrainingZones
 from services.plan_validator import format_problems, validate_intro_days, validate_macro, validate_week
+from services.week_adaptation import WeekAdjustment
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,22 @@ def _clean(value: Any, max_len: int = 100) -> str:
 def _profile_block(athlete_profile: Optional[Dict[str, Any]]) -> str:
     text = (athlete_profile or {}).get("summary_text")
     return text.strip() if isinstance(text, str) and text.strip() else NO_DATA
+
+
+def _adjustment_block(adjustment: Optional[WeekAdjustment]) -> str:
+    """Поправка по факту прошлой недели для промпта: все числа посчитаны кодом."""
+    if adjustment is None or not adjustment.changed:
+        return ""
+    lines = ["КОРРЕКТИРОВКА ПО ФАКТУ ПРОШЛОЙ НЕДЕЛИ (рассчитана кодом, километраж выше уже учитывает её):"]
+    if adjustment.summary:
+        lines.append(f"- {adjustment.summary}")
+    lines += [f"- {reason}" for reason in adjustment.reasons]
+    if adjustment.max_quality is not None:
+        lines.append(
+            "- Качественных тренировок (marathon, threshold, interval, repetition) не больше "
+            f"{adjustment.max_quality}."
+        )
+    return "\n".join(lines) + "\n"
 
 
 def target_km_for_week(macro: MacroPlan, week_number: int) -> float:
@@ -235,18 +252,20 @@ class PlanGenerator:
         week_start: str,
         week_end: str,
         zones: Optional[TrainingZones] = None,
+        adjustment: Optional[WeekAdjustment] = None,
     ) -> str:
         phase = macro.phase_for_week(week_number)
         long_limit = (
             f", не длиннее {rules.long_run_max_km(zones):g} км ({rules.LONG_MAX_MINUTES} мин в лёгком темпе атлета)"
             if zones is not None else ""
         )
-        target = target_km_for_week(macro, week_number)
+        target = adjustment.target_km if adjustment else target_km_for_week(macro, week_number)
         return (
             f"Составь недельный микроцикл: неделя подготовки №{int(week_number)} из {macro.total_weeks} "
             f"({_clean(week_start, 20)} — {_clean(week_end, 20)}). Цель: {_clean(race)}.\n"
             f"Фаза {phase.number}: {_clean(phase.name)}. Задачи фазы: {_clean(phase.focus, 400)}.\n"
-            f"Плановый километраж недели: {target:g} км (допуск ±{rules.TARGET_KM_TOLERANCE:.0%}).\n\n"
+            f"Плановый километраж недели: {target:g} км (допуск ±{rules.TARGET_KM_TOLERANCE:.0%}).\n"
+            f"{_adjustment_block(adjustment)}\n"
             f"АТЛЕТ:\n<data>\n{_profile_block(profile)}\n</data>\n\n"
             "Верни JSON такой структуры (пример формата, значения подбери сам):\n"
             f"{WEEK_EXAMPLE}\n\n"
@@ -346,18 +365,28 @@ class PlanGenerator:
         week_start: str,
         week_end: str,
         zones: Optional[TrainingZones] = None,
+        adjustment: Optional[WeekAdjustment] = None,
     ) -> WeekPlan:
-        """zones: зоны темпа атлета; по ним код считает потолок длительного бега в км."""
-        target = target_km_for_week(macro, week_number)
+        """zones: зоны темпа атлета; по ним код считает потолок длительного бега в км.
+
+        adjustment: поправка по факту прошлой недели (week_adaptation): заменяет километраж макроплана
+        и ограничивает число качественных тренировок.
+        """
+        target = adjustment.target_km if adjustment else target_km_for_week(macro, week_number)
+        max_quality = adjustment.max_quality if adjustment else None
         phase_number = macro.phase_for_week(week_number).number
-        prompt = self._week_prompt(athlete_profile, target_race, macro, week_number, week_start, week_end, zones)
+        prompt = self._week_prompt(
+            athlete_profile, target_race, macro, week_number, week_start, week_end, zones, adjustment,
+        )
         messages = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": prompt},
         ]
         return await self._generate(
             messages, WeekPlan,
-            lambda w: validate_week(w, target_km=target, phase_number=phase_number, zones=zones),
+            lambda w: validate_week(
+                w, target_km=target, phase_number=phase_number, zones=zones, max_quality=max_quality,
+            ),
             temperature=0.4, what="недельный план",
         )
 
