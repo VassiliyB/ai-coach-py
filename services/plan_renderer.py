@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from schemas.plan import MacroPlan, Phase, PlannedDay, WeekPlan, WorkoutType
 from services.coach_service import TrainingZones
+from services.macro_replan import Replan
 from services.plan_paces import estimate_duration_min, hr_text, pace_text
 from services.vdot_review import VdotChange, VdotReview
 from services.week_adaptation import WeekAdjustment
@@ -279,4 +280,24 @@ def render_vdot_review(
         lines += ["", "Темпы тренировок обновлены:", render_zones(zones)]
     if goal_note:
         lines += ["", goal_note]
+    return "\n".join(lines)
+
+
+def render_replan(replan: Replan) -> str:
+    """Пересчёт оставшихся недель: причины и километраж «было → стало» с недели пересчёта."""
+    start = replan.from_week
+    old = SEP.join(_km(v) for v in replan.old_km[start - 1:])
+    new = SEP.join(_km(v) for v in replan.macro.weekly_km[start - 1:])
+    end = len(replan.old_km)
+    weeks = f"нед. {start}" if start == end else f"нед. {start}–{end}"
+    lines = [
+        "🔄 <b>План пересчитан</b>",
+        "Причина: " + _e("; ".join(replan.reasons)),
+        "",
+        f"Километраж ({weeks}):",
+        f"было: {old}",
+        f"стало: <b>{new}</b>",
+        "",
+        "<i>Объём восстанавливается постепенно, не больше +10% в неделю. Дата забега и фазы не меняются.</i>",
+    ]
     return "\n".join(lines)

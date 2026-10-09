@@ -96,3 +96,11 @@ class PlanRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def set_week_review(self, weekly_id: int, review: Dict[str, Any]) -> None:
+        await self.session.execute(update(WeeklyPlan).where(WeeklyPlan.id == weekly_id).values(review=review))
+
+    async def set_plan_details(self, plan_id: int, plan_details: Dict[str, Any]) -> None:
+        await self.session.execute(
+            update(TrainingPlan).where(TrainingPlan.id == plan_id).values(plan_details=plan_details)
+        )

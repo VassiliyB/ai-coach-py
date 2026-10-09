@@ -2,7 +2,7 @@
 import logging
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional
+from typing import Optional, Tuple
 
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -18,20 +18,28 @@ from models.user import AppUser
 from schemas.plan import MacroPlan
 from services.activity_poller import ActivityPoller
 from services.coach_service import TrainingZones, build_profile_context, calculate_zones, zones_for_profile
+from services.macro_replan import (
+    REPLAN_WINDOW_DAYS,
+    adjustment_after_replan,
+    replan_macro,
+    replan_reasons,
+    start_km_after,
+)
 from services.message_service import MessageService
 from services.plan_calendar import DATE_FORMAT, monday_of, next_week_dates, plan_total_weeks, plan_week_number
 from services.plan_generator import PlanGenerator, target_km_for_week
-from services.plan_renderer import render_vdot_review, render_week
+from services.plan_renderer import render_replan, render_vdot_review, render_week
 from services.plan_storage import parse_macro, parse_week
 from services.race_goal import assess_goal, race_distance_m, render_goal_after_review
 from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now, local_today
-from services.vdot_review import RECENT_WEEKS, review_due, review_vdot
+from services.vdot_review import RECENT_WEEKS, longest_gap_days, review_due, review_vdot
 from services.week_adaptation import (
     RecoverySignals,
     WeekAdjustment,
     adjust_next_week,
+    review_to_dict,
     review_week,
     run_facts,
 )
@@ -101,7 +109,7 @@ class TrainingSchedulerService:
         await self._review_vdot(user, plan, profile, week_number, today)  # обновляет profile.vdot
         zones = zones_for_profile(profile)
         max_hr = getattr(profile, "max_heart_rate", None)
-        adjustment = await self._week_adjustment(user, plan.id, macro, week_number, today, zones, max_hr)
+        adjustment, macro = await self._adapt_week(user, plan, macro, week_number, today, zones, max_hr)
         logger.info(
             "Генерация недели для user_id=%s (chat_id=%s): №%d из %d (%s - %s)",
             user.id, user.telegram_chat_id, week_number, macro.total_weeks, week_start, week_end,
@@ -189,40 +197,48 @@ class TrainingSchedulerService:
         text = render_vdot_review(review, calculate_zones(review.new), goal_note)
         await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
-    async def _week_adjustment(
+    async def _adapt_week(
         self,
         user: AppUser,
-        plan_id: int,
+        plan: TrainingPlan,
         macro: MacroPlan,
         week_number: int,
         today: date,
         zones: Optional[TrainingZones],
         max_hr: Optional[int],
-    ) -> Optional[WeekAdjustment]:
-        """Поправка следующей недели по факту текущей (план в БД против пробежек Garmin) и восстановлению.
+    ) -> Tuple[Optional[WeekAdjustment], MacroPlan]:
+        """Адаптация по факту: поправка следующей недели (уровень 1) и пересчёт макроплана по событиям (уровень 3).
 
-        None, если данных Garmin нет: неделя строится по макроплану. Сбой здесь рассылку не останавливает.
+        Сравнивает план текущей недели в БД с пробежками Garmin, сохраняет факт недели, при перерыве или
+        двух слабых неделях подряд пересчитывает оставшийся километраж и сообщает об этом.
+        Возвращает (поправка или None без данных Garmin, актуальный макроплан). Сбой рассылку не останавливает.
         """
         chat_id = user.telegram_chat_id
         if self.garmin is None or not user.garmin_linked or not self.garmin.has_saved_tokens(chat_id):
-            return None
+            return None, macro
         current_monday = monday_of(today)
+        window_start = today - timedelta(days=REPLAN_WINDOW_DAYS - 1)
         try:
-            facts = await self.garmin.get_week_facts(chat_id, current_monday, today)
+            facts = await self.garmin.get_week_facts(chat_id, min(window_start, current_monday), today)
             async with async_session_maker() as session:
-                weekly = await UserService.get_weekly_plan_by_start(session, plan_id, current_monday)
+                weekly = await UserService.get_weekly_plan_by_start(session, plan.id, current_monday)
+                previous = await UserService.get_weekly_plan_by_start(
+                    session, plan.id, current_monday - timedelta(days=7),
+                )
             planned = parse_week(weekly.plan_details) if weekly else None
         except GarminClientError as exc:
             logger.warning("Факт недели из Garmin не получен (chat_id=%s): %s", chat_id, exc)
-            return None
+            return None, macro
         except Exception:
             logger.exception("Ошибка подготовки корректировки недели (chat_id=%s)", chat_id)
-            return None
+            return None, macro
 
-        review = (
-            review_week(planned, current_monday, run_facts(facts["runs"]), today, zones, max_hr)
-            if planned else None
-        )
+        runs = run_facts(facts["runs"])
+        review = review_week(planned, current_monday, runs, today, zones, max_hr) if planned else None
+        if weekly is not None and review is not None and review.compliance is not None:
+            async with async_session_maker() as session:
+                await UserService.set_week_review(session, weekly.id, review_to_dict(review))
+
         adjustment = adjust_next_week(
             target_km_for_week(macro, week_number), review,
             RecoverySignals(hrv_status=facts.get("hrv_status"), readiness=facts.get("readiness")),
@@ -232,7 +248,23 @@ class TrainingSchedulerService:
                 "Корректировка недели (chat_id=%s): %s км, качественных не больше %s; %s",
                 chat_id, adjustment.target_km, adjustment.max_quality, adjustment.reasons,
             )
-        return adjustment
+
+        # Уровень 3: пересчёт оставшихся недель. Неделя №1 только что построена от текущей формы
+        gap = longest_gap_days((r.day for r in runs), window_start, today)
+        previous_compliance = (previous.review or {}).get("compliance") if previous else None
+        reasons = replan_reasons(gap, [previous_compliance, review.compliance if review else None])
+        if reasons and week_number > 1:
+            plan_target = target_km_for_week(macro, week_number)
+            start_km = start_km_after(plan_target, adjustment.target_km, gap)
+            replan = replan_macro(macro, week_number, start_km, reasons)
+            if replan.changes():
+                async with async_session_maker() as session:
+                    await UserService.update_plan_macro(session, plan.id, replan.macro)
+                logger.info("План пересчитан (chat_id=%s) с недели %d: %s", chat_id, week_number, reasons)
+                await self.bot.send_message(chat_id=chat_id, text=render_replan(replan), parse_mode="HTML")
+                macro = replan.macro
+                adjustment = adjustment_after_replan(adjustment, replan, gap)
+        return adjustment, macro
 
     async def weekly_distribution_tick(self, now_utc: Optional[datetime] = None) -> int:
         """Ежечасная проверка: отправляет неделю тем, у кого по их поясу воскресенье и уже 15:00.

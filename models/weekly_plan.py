@@ -38,6 +38,8 @@ class WeeklyPlan(Base):
     plan_details: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     # Выгруженные в календарь Garmin тренировки: [{"date": "YYYY-MM-DD", "workout_id": int}]
     garmin_workouts: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
+    # Факт недели при рассылке следующей: {"planned_km", "done_km", "compliance"} (services.week_adaptation)
+    review: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
     )

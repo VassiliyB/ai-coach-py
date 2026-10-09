@@ -222,3 +222,12 @@ def adjust_next_week(
         reasons=reasons,
         summary=summary,
     )
+
+
+def review_to_dict(review: WeekReview) -> Dict[str, Any]:
+    """Факт недели для weekly_plans.review: по нему следующая рассылка видит «две слабые недели подряд»."""
+    return {
+        "planned_km": review.planned_km,
+        "done_km": review.done_km,
+        "compliance": round(review.compliance, 3) if review.compliance is not None else None,
+    }
