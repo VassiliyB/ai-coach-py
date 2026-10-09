@@ -10,7 +10,7 @@ Telegram-бот: персональный тренер по бегу на осн
 
 ## Стек
 
-Python 3.12, aiogram 3.x, SQLAlchemy 2.0 async + asyncpg, PostgreSQL 16, Alembic (async), pydantic v2 и pydantic-settings, garminconnect >= 0.3.4, APScheduler 3.x, pytest.
+Python 3.12, aiogram 3.x, SQLAlchemy 2.0 async + asyncpg, PostgreSQL 16, Redis 7 (состояния диалогов), Alembic (async), pydantic v2 и pydantic-settings, garminconnect >= 0.3.4, APScheduler 3.x, pytest.
 
 LLM: `anthropic` SDK (Claude, по умолчанию `claude-haiku-5-5`) или `openai` SDK (Groq, `openai/gpt-oss-20b`). Провайдер задаёт `LLM_PROVIDER` в `.env` (`claude` или `groq`).
 
@@ -60,12 +60,12 @@ services/workout_catalog.py каталог качественных тренир
 services/garmin_link.py     сброс привязки Garmin при истёкшей сессии (токены + garmin_linked)
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
 services/scheduler_service.py send_week, ежечасная проверка рассылки недель (ВС с 15:00 по поясу пользователя), опрос Garmin
-bot/                        states.py, keyboards.py, commands.py (меню команд), access_panel.py (панель /users), middlewares.py (AccessMiddleware, UserLockMiddleware), handlers/{access,start,sync,plan,show_plan,race,analyze,ask,settings,garmin_export}.py
+bot/                        states.py, keyboards.py, commands.py (меню команд), access_panel.py (панель /users), fsm_storage.py (Redis или память для FSM), middlewares.py (AccessMiddleware, UserLockMiddleware), handlers/{access,start,sync,plan,show_plan,race,analyze,ask,settings,garmin_export}.py
 migrations/                 Alembic (env.py берёт URL из settings)
 tests/                      pytest, без сети, БД и .env
 .github/workflows/ci.yml    CI: ruff, pytest и сборка Docker-образа на каждый пуш и pull request в main
 Dockerfile, .dockerignore   образ бота: python:3.12-slim, только requirements.txt, пользователь coach
-docker-compose.yml          бот + PostgreSQL 16, тома pgdata и garmin_tokens
+docker-compose.yml          бот + PostgreSQL 16 + Redis 7, тома pgdata, redisdata и garmin_tokens
 ```
 
 ## Команды (Windows, PowerShell, venv)
@@ -247,10 +247,16 @@ docker compose down                                   # остановить (д
 
 **Docker**
 - Образ содержит только боевые зависимости; `.env`, токены Garmin, тесты и `venv` в него не попадают (`.dockerignore`). Секреты приходят через `env_file: .env` при запуске.
-- В compose `DATABASE_URL` перекрывается адресом контейнера `db`, `GARMIN_TOKENS_DIR` указывает на том `garmin_tokens`. Порт БД наружу не публикуется.
+- В compose `DATABASE_URL` перекрывается адресом контейнера `db`, `REDIS_URL` адресом `redis`, `GARMIN_TOKENS_DIR` указывает на том `garmin_tokens`. Порты БД и Redis наружу не публикуются.
 - БД в контейнере отдельная от локальной PostgreSQL: при переходе на Docker данные нужно перенести (`pg_dump` / `pg_restore`) или начать заново (`/sync`, `/plan`).
 - Не запускать бота в контейнере и локально одновременно с одним `TELEGRAM_BOT_TOKEN`: два опроса Telegram мешают друг другу, а блокировки пользователей работают только внутри одного процесса.
 - На сервере Garmin видит IP сервера: при 429 вход делать через `docker compose run --rm bot python generate_token.py` с другой сети или переносить токены в том.
+
+**Состояния диалогов (`bot/fsm_storage.py`)**
+- `REDIS_URL` задан (в compose всегда): `RedisStorage` с TTL `FSM_TTL` (24 ч) на состояние и данные; брошенный диалог сбрасывается через сутки. Не задан: `MemoryStorage` и предупреждение в логе. Пакет `redis` импортируется только с `REDIS_URL`.
+- При запуске `check_fsm_storage` делает `PING`: недоступный Redis останавливает запуск, а не ломает первый диалог. Закрывает хранилище сам `Dispatcher` при остановке.
+- В данные FSM класть только то, что сериализуется в JSON (строки, числа, None; даты строкой ISO).
+- Redis в compose с AOF (`--appendonly yes`) в томе `redisdata`: состояния переживают и перезапуск Redis.
 
 **Telegram**
 - Только поддерживаемые теги: `b`, `i`, `u`, `s`, `code`, `pre`, `blockquote`, `a`. Любой текст от модели экранировать (`html.escape`).
@@ -299,6 +305,7 @@ docker compose down                                   # остановить (д
 
 - Результат забега вручную (`/race`): VDOT по забегу приоритетнее тренировочного, `/sync` его не снижает, оценка цели без запаса. Миграция `f4b1d7a3c9e2` проверена на локальной БД (с откатом), запись забега и `/sync` поверх проверены скриптом на локальной БД (с откатом) и в Telegram.
 - Пульсовые зоны вручную (`/pulse`: ЧССmax или ПАНО, зоны от ПАНО по Фицджеральду). Миграция `a8c2e5f9d1b3` проверена на локальной БД (с откатом), запись, `/sync` поверх и сброс проверены скриптом на локальной БД (с откатом) и в Telegram.
+- Состояния диалогов в Redis (`REDIS_URL`, сервис `redis` в compose): сохранение и чтение после переподключения проверены на временном контейнере Redis, образ бота собирается с пакетом `redis`, перезапуск посреди `/plan` проверен вживую.
 
 ## Известные ограничения
 
@@ -309,7 +316,7 @@ docker compose down                                   # остановить (д
 - Пояс, определённый по Garmin, сохраняется смещением: при переходе на летнее время его нужно поправить через `/timezone` (имя IANA учитывает переход само).
 - Возможный прирост VDOT в `race_goal` это эвристика (скорость по уровню и потолок за цикл), а не формула Дэниелса: пороги можно подстраивать по опыту пользователей.
 - `raw_summary_text` паспорта после пересмотра не обновляется (в промпт VDOT и зоны идут отдельно, из профиля).
-- FSM хранится в `MemoryStorage`: состояния теряются при перезапуске бота.
+- Без `REDIS_URL` (локальный запуск) FSM в памяти: состояния теряются при перезапуске. Ввод кода MFA не переживает перезапуск и с Redis: незавершённый вход Garmin живёт в памяти `GarminClient`.
 - Лимиты `plan_validator` строгие при малом объёме (при 20 км в неделю порог ограничен 2 км). Модель часто целится точно в границы допусков.
 - С Groq (бесплатный тариф, 8000 токенов в минуту) генерация недели почти не помещается в лимит: системный промпт ~6 тыс. токенов плюс промпт недели с каталогом. Основной провайдер Claude; для Groq нужна короткая версия базы знаний.
 

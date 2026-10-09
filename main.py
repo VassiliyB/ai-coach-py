@@ -3,9 +3,9 @@ import asyncio
 import logging
 
 from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.commands import setup_bot_commands
+from bot.fsm_storage import check_fsm_storage, create_fsm_storage
 from bot.handlers import access as access_handlers
 from bot.handlers import analyze, ask, garmin_export, plan, race, show_plan, start, sync
 from bot.handlers import settings as settings_handlers
@@ -57,10 +57,14 @@ async def main() -> None:
         garmin=garmin_client,
     )
 
+    # Состояния диалогов: Redis переживает перезапуск (REDIS_URL), без него память процесса
+    storage = create_fsm_storage(settings.REDIS_URL.get_secret_value() if settings.REDIS_URL else None)
+    await check_fsm_storage(storage)
+
     # 3. Диспетчер: именованные аргументы становятся зависимостями хендлеров (DI).
     #    Имя аргумента = имя параметра в хендлере (garmin, ai_coach, plan_generator, scheduler_service).
     dp = Dispatcher(
-        storage=MemoryStorage(),
+        storage=storage,   # закрывает сам Dispatcher при остановке
         garmin=garmin_client,
         ai_coach=ai_coach,
         plan_generator=plan_generator,

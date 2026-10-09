@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # База данных PostgreSQL (асинхронный диалект asyncpg)
     DATABASE_URL: SecretStr = Field(..., description="URL подключения к БД Postgres")
 
+    # Состояния диалогов (FSM): redis://host:6379/0. Без него в памяти процесса, теряются при перезапуске
+    REDIS_URL: Optional[SecretStr] = Field(default=None, description="URL Redis для состояний диалогов")
+
     # Опрос Garmin: раз в сколько минут искать новые пробежки для автоматического разбора (0 = выключен).
     # Опрос сам токены не тратит, они уходят только на разбор новой пробежки; реже = меньше запросов к Garmin
     ACTIVITY_POLL_MINUTES: int = Field(default=120, ge=0)

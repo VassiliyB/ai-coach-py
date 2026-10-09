@@ -1,4 +1,4 @@
-# Бот и PostgreSQL. Запуск: docker compose up -d --build; логи: docker compose logs -f bot
+# Бот, PostgreSQL и Redis (состояния диалогов). Запуск: docker compose up -d --build; логи: docker compose logs -f bot
 # В .env, кроме ключей бота, нужен POSTGRES_PASSWORD (пароль БД в контейнере);
 # POSTGRES_USER и POSTGRES_DB необязательны (по умолчанию coach и coach_db).
 services:
@@ -18,6 +18,20 @@ services:
       retries: 10
     # Порт наружу не публикуется: БД нужна только боту внутри сети compose
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF: состояния диалогов переживают и перезапуск самого Redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Порт наружу не публикуется, как и у БД
+
   bot:
     build: .
     restart: unless-stopped
@@ -26,12 +40,16 @@ services:
       # Перекрывают значения из .env: внутри compose БД доступна по имени сервиса db
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-coach}:${POSTGRES_PASSWORD:?задайте POSTGRES_PASSWORD в .env}@db:5432/${POSTGRES_DB:-coach_db}
       GARMIN_TOKENS_DIR: /app/.garmin_tokens
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - garmin_tokens:/app/.garmin_tokens
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   pgdata:
+  redisdata:
   garmin_tokens:
