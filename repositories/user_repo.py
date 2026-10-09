@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import delete, select, update
@@ -83,3 +84,10 @@ class UserRepository:
             .execution_options(populate_existing=True)
         )
         return (await self.session.execute(stmt)).scalar_one()
+
+    async def set_reviewed_vdot(self, user_id: int, vdot: float, reviewed_on: date) -> None:
+        await self.session.execute(
+            update(AthleteProfile)
+            .where(AthleteProfile.user_id == user_id)
+            .values(vdot=vdot, vdot_reviewed_on=reviewed_on, updated_at=utcnow())
+        )

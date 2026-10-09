@@ -8,6 +8,7 @@ from typing import List, Optional
 from schemas.plan import MacroPlan, Phase, PlannedDay, WeekPlan, WorkoutType
 from services.coach_service import TrainingZones
 from services.plan_paces import estimate_duration_min, hr_text, pace_text
+from services.vdot_review import VdotChange, VdotReview
 from services.week_adaptation import WeekAdjustment
 
 DAY_NAMES = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
@@ -258,4 +259,24 @@ def render_plan_overview(
         lines.append("⏱ Цель по времени не задана: план строится по текущей форме.")
         if forecast_line:
             lines.append(forecast_line)
+    return "\n".join(lines)
+
+
+def render_vdot_review(
+    review: VdotReview,
+    zones: Optional[TrainingZones] = None,
+    goal_note: Optional[str] = None,
+) -> str:
+    """Итог пересмотра VDOT раз в 4 недели. zones: зоны по новому VDOT; goal_note: готовый HTML о цели."""
+    if review.change == VdotChange.RAISED:
+        head = f"📈 Форма выросла: VDOT <b>{review.old:g} → {review.new:g}</b>"
+    elif review.change == VdotChange.LOWERED:
+        head = f"📉 Форма снизилась: VDOT <b>{review.old:g} → {review.new:g}</b>"
+    else:
+        head = f"VDOT без изменений: <b>{review.old:g}</b>"
+    lines = ["🔬 <b>Пересмотр формы</b> (раз в 4 недели)", head, f"<i>{_e(review.reason)}</i>"]
+    if review.change != VdotChange.KEPT and zones is not None:
+        lines += ["", "Темпы тренировок обновлены:", render_zones(zones)]
+    if goal_note:
+        lines += ["", goal_note]
     return "\n".join(lines)

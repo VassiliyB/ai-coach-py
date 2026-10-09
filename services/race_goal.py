@@ -236,3 +236,14 @@ def fastest_realistic_s(current_vdot: float, distance_m: float, weeks: int) -> i
     """Самая быстрая цель, которую assess_goal ещё примет: лучший реальный результат, округлённый до 5 с вверх."""
     best_vdot = min(current_vdot + max_vdot_gain(current_vdot, weeks), MAX_VDOT)
     return int(math.ceil(predict_race_time(best_vdot, distance_m) / 5) * 5)
+
+
+def render_goal_after_review(assessment: GoalAssessment, distance_m: float) -> str:
+    """Цель после пересмотра VDOT: строка цели или предупреждение, что она стала нереалистичной."""
+    if assessment.accepted:
+        return render_goal_line(assessment, distance_m)
+    return (
+        f"⚠️ Цель <b>{format_duration(assessment.target_time_s)}</b> теперь нереалистична: для неё нужен "
+        f"VDOT {assessment.target_vdot:g}, а к забегу реально около "
+        f"<b>{format_duration(assessment.best_realistic_s)}</b>. Измените цель в /show_plan."
+    )

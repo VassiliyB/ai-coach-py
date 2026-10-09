@@ -59,6 +59,12 @@ class UserService:
         return profile
 
     @staticmethod
+    async def set_reviewed_vdot(session: AsyncSession, user_id: int, vdot: float, reviewed_on: date) -> None:
+        """VDOT после пересмотра раз в 4 недели (services.vdot_review)."""
+        await UserRepository(session).set_reviewed_vdot(user_id, vdot, reviewed_on)
+        await session.commit()
+
+    @staticmethod
     async def get_athlete_profile(session: AsyncSession, user_id: int) -> Optional[AthleteProfile]:
         return await UserRepository(session).get_profile(user_id)
 

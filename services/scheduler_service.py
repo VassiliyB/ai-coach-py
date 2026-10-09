@@ -1,6 +1,6 @@
 # services/scheduler_service.py
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
@@ -17,15 +17,17 @@ from models.training_plan import TrainingPlan
 from models.user import AppUser
 from schemas.plan import MacroPlan
 from services.activity_poller import ActivityPoller
-from services.coach_service import TrainingZones, build_profile_context, zones_for_profile
+from services.coach_service import TrainingZones, build_profile_context, calculate_zones, zones_for_profile
 from services.message_service import MessageService
-from services.plan_calendar import DATE_FORMAT, monday_of, next_week_dates, plan_week_number
+from services.plan_calendar import DATE_FORMAT, monday_of, next_week_dates, plan_total_weeks, plan_week_number
 from services.plan_generator import PlanGenerator, target_km_for_week
-from services.plan_renderer import render_week
+from services.plan_renderer import render_vdot_review, render_week
 from services.plan_storage import parse_macro, parse_week
+from services.race_goal import assess_goal, race_distance_m, render_goal_after_review
 from services.user_locks import UserLocks
 from services.user_service import UserService
 from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now, local_today
+from services.vdot_review import RECENT_WEEKS, review_due, review_vdot
 from services.week_adaptation import (
     RecoverySignals,
     WeekAdjustment,
@@ -96,6 +98,7 @@ class TrainingSchedulerService:
             return WeekStatus.FINISHED
 
         week_start, week_end = monday.strftime(DATE_FORMAT), sunday.strftime(DATE_FORMAT)
+        await self._review_vdot(user, plan, profile, week_number, today)  # обновляет profile.vdot
         zones = zones_for_profile(profile)
         max_hr = getattr(profile, "max_heart_rate", None)
         adjustment = await self._week_adjustment(user, plan.id, macro, week_number, today, zones, max_hr)
@@ -149,6 +152,42 @@ class TrainingSchedulerService:
                 reply_markup=markup if i == len(chunks) - 1 else None,
             )
         return WeekStatus.SENT
+
+    async def _review_vdot(
+        self, user: AppUser, plan: TrainingPlan, profile: Optional[AthleteProfile], week_number: int, today: date,
+    ) -> None:
+        """Пересмотр VDOT перед неделями 5, 9, 13, ...: сохраняет новый VDOT в профиль и сообщает итог.
+
+        Меняет profile.vdot на месте, чтобы неделя строилась по новым темпам. Сбой не останавливает рассылку.
+        """
+        chat_id = user.telegram_chat_id
+        if (
+            profile is None or not profile.vdot or self.garmin is None or not user.garmin_linked
+            or not self.garmin.has_saved_tokens(chat_id)
+            or not review_due(week_number, profile.vdot_reviewed_on, today)
+        ):
+            return
+        try:
+            runs = await self.garmin.get_runs_raw(chat_id, today - timedelta(weeks=RECENT_WEEKS), today)
+        except GarminClientError as exc:
+            logger.warning("Пересмотр VDOT отложен: нет данных Garmin (chat_id=%s): %s", chat_id, exc)
+            return
+
+        review = review_vdot(profile.vdot, runs, today)
+        async with async_session_maker() as session:
+            await UserService.set_reviewed_vdot(session, user.id, review.new, today)
+        profile.vdot, profile.vdot_reviewed_on = review.new, today
+        logger.info("Пересмотр VDOT (chat_id=%s): %s -> %s, %s", chat_id, review.old, review.new, review.reason)
+
+        goal_note = None
+        distance_m = race_distance_m(plan.target_race)
+        if plan.target_time_s and distance_m:
+            assessment = assess_goal(
+                review.new, plan.target_time_s, distance_m, max(0, plan_total_weeks(today, plan.race_date)),
+            )
+            goal_note = render_goal_after_review(assessment, distance_m)
+        text = render_vdot_review(review, calculate_zones(review.new), goal_note)
+        await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
     async def _week_adjustment(
         self,

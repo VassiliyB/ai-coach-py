@@ -11,6 +11,7 @@ from database import async_session_maker
 from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
 from services.message_service import MessageService
 from services.user_service import UserService
+from services.vdot_review import vdot_after_sync
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -34,8 +35,19 @@ async def handle_sync(message: Message, garmin: GarminClient) -> None:
         profile_data = await garmin.get_athlete_profile_90d(chat_id=chat_id, days=90)
 
         detected_tz = profile_data.get("utc_offset")
+        vdot_note = ""
         async with async_session_maker() as session:
             user = await UserService.get_or_create_user(session, chat_id)
+            old = await UserService.get_athlete_profile(session, user.id)
+            # После пересмотров раз в 4 недели старая быстрая пробежка не поднимает VDOT в обход правил
+            reviewed_on = getattr(old, "vdot_reviewed_on", None)
+            vdot = vdot_after_sync(profile_data.get("vdot"), getattr(old, "vdot", None), reviewed_on)
+            if profile_data.get("vdot") is not None and vdot is not None and vdot < profile_data["vdot"]:
+                vdot_note = (
+                    f"ℹ️ Для темпов оставлен VDOT <b>{vdot:g}</b> из пересмотра формы "
+                    f"{reviewed_on:%d.%m}: рост подтвердит следующий пересмотр.\n\n"
+                )
+            profile_data["vdot"] = vdot
             await UserService.save_athlete_profile(session, user.id, profile_data)
             # Пояс, заданный вручную через /timezone, не перезаписываем
             tz_saved = user.timezone is None and detected_tz is not None
@@ -52,6 +64,7 @@ async def handle_sync(message: Message, garmin: GarminClient) -> None:
             "📊 <b>Ваш спортивный паспорт обновлён:</b>\n\n"
             f"{html.escape(profile_data['summary_text'])}\n\n"
             f"{tz_line}"
+            f"{vdot_note}"
             "Теперь можно составить макроплан через <code>/plan</code>!"
         )
         for chunk in MessageService.chunk_message(text):

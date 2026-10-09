@@ -221,6 +221,10 @@ class GarminClient:
                 logger.info("Нет данных %s для chat_id=%s: %s", key, chat_id, exc)
         return {"runs": runs, **signals}
 
+    def _fetch_runs_sync(self, chat_id: int, start: date, end: date) -> List[Dict[str, Any]]:
+        client = self._init_session_sync(chat_id)
+        return list(self._api_call(client.get_activities_by_date, start.isoformat(), end.isoformat(), "running") or [])
+
     # ---------------- Публичный асинхронный интерфейс ----------------
 
     async def login_start(self, chat_id: int, email: str, password: str) -> str:
@@ -258,6 +262,10 @@ class GarminClient:
         Возвращает {"runs": [...], "hrv_status": str | None, "readiness": int | None}.
         """
         return await asyncio.to_thread(self._fetch_week_facts_sync, chat_id, start, end)
+
+    async def get_runs_raw(self, chat_id: int, start: date, end: date) -> List[Dict[str, Any]]:
+        """Беговые тренировки за период в сыром формате Garmin (для find_best_effort)."""
+        return await asyncio.to_thread(self._fetch_runs_sync, chat_id, start, end)
 
     async def clear_session(self, chat_id: int) -> None:
         """Забывает пользователя: незавершённый вход по MFA в памяти и файл токенов на диске."""

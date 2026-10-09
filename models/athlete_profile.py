@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, Text, func
+from sqlalchemy import BigInteger, Date, DateTime, Float, ForeignKey, Integer, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base, utcnow
@@ -24,6 +24,8 @@ class AthleteProfile(Base):
     vdot: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     best_effort_distance_m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     best_effort_time_s: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Дата последнего пересмотра VDOT раз в 4 недели (services.vdot_review); /sync её не трогает
+    vdot_reviewed_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=func.now(), nullable=False
     )
