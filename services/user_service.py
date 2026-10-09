@@ -81,6 +81,13 @@ class UserService:
         return to_tzinfo(user.timezone, default=settings.DEFAULT_TIMEZONE)
 
     @staticmethod
+    async def timezone_for_chat(session: AsyncSession, chat_id: int) -> tzinfo:
+        """Пояс по chat_id (время в уведомлениях админам); записи нет: пояс по умолчанию."""
+        from config import settings
+        user = await UserRepository(session).get_by_chat_id(chat_id)
+        return to_tzinfo(user.timezone if user else None, default=settings.DEFAULT_TIMEZONE)
+
+    @staticmethod
     async def set_garmin_linked(session: AsyncSession, chat_id: int, linked: bool = True) -> None:
         await UserRepository(session).set_garmin_linked(chat_id, linked)
         await session.commit()

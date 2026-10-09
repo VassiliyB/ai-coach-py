@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     # Админы бота: chat_id через запятую. Одобряют новых пользователей, сами имеют доступ всегда.
     # Пусто: новых пользователей одобрить некому, ботом пользуются только уже одобренные
     ADMIN_CHAT_IDS: Annotated[frozenset[int], NoDecode] = frozenset()
+    # Ошибки (записи лога ERROR) приходят админам в Telegram, одна и та же не чаще раза в час
+    ADMIN_ALERTS: bool = True
 
     # LLM: провайдер выбирается здесь, остальной код работает через общий интерфейс generate_response
     LLM_PROVIDER: Literal["groq", "claude"] = "groq"

@@ -1,6 +1,7 @@
 # main.py
 import asyncio
 import logging
+from datetime import tzinfo
 
 from aiogram import Bot, Dispatcher
 
@@ -16,11 +17,13 @@ from config import settings
 from database import async_session_maker, engine, run_migrations
 from services.access_control import AccessControl
 from services.activity_poller import ActivityPoller
+from services.admin_alerts import install_admin_alerts
 from services.ai_coach_service import AICoachService
 from services.plan_generator import PlanGenerator
 from services.scheduler_service import TrainingSchedulerService
 from services.user_locks import UserLocks
 from services.user_service import UserService
+from services.user_time import to_tzinfo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +41,16 @@ async def main() -> None:
 
     # 2. Единые экземпляры сервисов (создаются один раз на всё приложение)
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN.get_secret_value())
+    # Ошибки из лога уходят админам в Telegram (с этого момента: раньше бота ещё нет), время в поясе админа
+    alerts = None
+    if settings.ADMIN_ALERTS:
+        async def admin_timezone(chat_id: int) -> tzinfo:
+            async with async_session_maker() as session:
+                return await UserService.timezone_for_chat(session, chat_id)
+
+        alerts = install_admin_alerts(
+            bot, settings.ADMIN_CHAT_IDS, admin_timezone, fallback_tz=to_tzinfo(settings.DEFAULT_TIMEZONE),
+        )
     garmin_client = GarminClient()
     ai_client = create_llm_client()  # один клиент (Groq или Claude) на текстовые ответы и планы
     logger.info("Провайдер LLM: %s", settings.LLM_PROVIDER)
@@ -108,6 +121,9 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         scheduler_service.shutdown()
+        if alerts is not None:
+            await alerts.aclose()       # накопленные ошибки уходят до закрытия сессии бота
+            logging.getLogger().removeHandler(alerts)
         await bot.session.close()
         await engine.dispose()          # корректно закрываем пул соединений с БД
         logger.info("Приложение остановлено.")
