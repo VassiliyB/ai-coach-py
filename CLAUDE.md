@@ -58,7 +58,7 @@ services/workout_catalog.py каталог качественных тренир
 services/garmin_link.py     сброс привязки Garmin при истёкшей сессии (токены + garmin_linked)
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
 services/scheduler_service.py send_week, ежечасная проверка рассылки недель (ВС с 15:00 по поясу пользователя), опрос Garmin
-bot/                        states.py, keyboards.py, middlewares.py (AccessMiddleware, UserLockMiddleware), handlers/{access,start,sync,plan,show_plan,analyze,ask,settings,garmin_export}.py
+bot/                        states.py, keyboards.py, commands.py (меню команд), access_panel.py (панель /users), middlewares.py (AccessMiddleware, UserLockMiddleware), handlers/{access,start,sync,plan,show_plan,analyze,ask,settings,garmin_export}.py
 migrations/                 Alembic (env.py берёт URL из settings)
 tests/                      pytest, без сети, БД и .env
 .github/workflows/ci.yml    CI: ruff, pytest и сборка Docker-образа на каждый пуш и pull request в main
@@ -218,7 +218,8 @@ docker compose down                                   # остановить (д
 - Бот закрытый: пользуются админы (`ADMIN_CHAT_IDS` в `.env`, chat_id через запятую) и одобренные ими. Статус в `app_users.access`: `pending` / `approved` / `blocked`; при миграции существующие пользователи получили `approved`.
 - `AccessMiddleware` стоит внешним на `dp.update`: событие без доступа не доходит ни до одного роутера. Решение принимает `AccessControl.decide` (без I/O). Без доступа: `/start` создаёт запрос (`pending`, админам сообщение с кнопками «Пустить» / «Отказать»), повторный `/start` сообщает статус, остальные сообщения получают «доступ закрыт» один раз до перезапуска, кнопки всплывающее окно. `/delete_me` и его кнопки доступны всем. Группы игнорируются.
 - Одобренные хранятся в памяти (`AccessControl`), загружаются при старте и меняются вместе с БД. Админы из настроек при старте одобряются и в БД. Как и блокировки, реестр рассчитан на один процесс.
-- Команды админа (фильтр `IsAdmin` на роутере, у остальных не срабатывают): `/users`, `/approve <chat_id>`, `/revoke <chat_id>`. Пользователю приходит сообщение об открытии или закрытии доступа.
+- Команды админа (фильтр `IsAdmin` на роутере, у остальных не срабатывают): `/users` это панель (`bot/access_panel.py`, без I/O): список по статусам и кнопка у каждого пользователя кроме админов (ожидающим «Пустить»/«Отказать», одобренным «Закрыть доступ», заблокированным «Вернуть доступ»), после нажатия список обновляется на месте. `/approve <chat_id>` и `/revoke <chat_id>` работают, но в меню их нет. Пользователю приходит сообщение об открытии или закрытии доступа.
+- Панель одним сообщением: при сотне пользователей упрётся в лимит Telegram (4096 символов, ~100 кнопок), тогда нужны страницы.
 - Фоновые задачи (опрос Garmin, рассылка недель) берут только `access = 'approved'`: отозванный доступ сразу останавливает трату токенов.
 - `UserService.get_or_create_user` создаёт запись сразу с доступом: до хендлеров доходят только допущенные (новая запись бывает у админа). Запрос доступа это `UserService.request_access`.
 - После `/delete_me` запись о доступе удаляется вместе с остальным: вернуться можно только через новый запрос.
@@ -239,6 +240,7 @@ docker compose down                                   # остановить (д
 **Telegram**
 - Только поддерживаемые теги: `b`, `i`, `u`, `s`, `code`, `pre`, `blockquote`, `a`. Любой текст от модели экранировать (`html.escape`).
 - Длинные сообщения резать через `MessageService.chunk_message`.
+- Меню команд (`bot/commands.py`) задаётся при каждом запуске (`setup_bot_commands`): общее для личных чатов (`USER_COMMANDS`) и расширенное в чате каждого админа (+ `ADMIN_COMMANDS`: `/users`, `/test_week`). Новую команду добавлять в один из списков; приветствие `/start` берёт список оттуда же, тест проверяет, что у каждой команды меню есть хендлер. `/test_week` скрыт из общего меню, но работает у всех допущенных. Админ, удалённый из `ADMIN_CHAT_IDS`, сохраняет своё меню, пока его не сбросить (`delete_my_commands` с его scope).
 - Хендлеры регистрировать на уровне модуля (раньше `/test_week` случайно был вложен в другую функцию и не работал).
 - Зависимости (`garmin`, `ai_coach`, `plan_generator`, `scheduler_service`) получать аргументами хендлера, не создавать при импорте модуля.
 

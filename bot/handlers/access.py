@@ -4,28 +4,25 @@
 Запрос (/start без доступа) обрабатывает AccessMiddleware через handle_access_request:
 до роутеров такое сообщение не доходит. Команды и кнопки здесь только для админов.
 """
-import html
 import logging
 from typing import Optional
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject, Filter
 from aiogram.types import CallbackQuery, Message
 
+from bot.access_panel import PANEL_APPROVE_PREFIX, PANEL_BLOCK_PREFIX, describe_user, render_users_panel
 from bot.keyboards import ACCESS_APPROVE_PREFIX, ACCESS_REJECT_PREFIX, get_access_request_keyboard
 from database import async_session_maker
 from models import AppUser
-from models.user import ACCESS_APPROVED, ACCESS_BLOCKED, ACCESS_PENDING
+from models.user import ACCESS_APPROVED, ACCESS_BLOCKED
 from services.access_control import AccessControl
-from services.message_service import MessageService
 from services.user_service import UserService
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-ACCESS_ICONS = {ACCESS_APPROVED: "✅", ACCESS_PENDING: "⏳", ACCESS_BLOCKED: "⛔"}
-ACCESS_TITLES = {ACCESS_APPROVED: "С доступом", ACCESS_PENDING: "Ждут одобрения", ACCESS_BLOCKED: "Без доступа"}
 
 class IsAdmin(Filter):
     """Админ из ADMIN_CHAT_IDS; у остальных команды админа не срабатывают вовсе."""
@@ -37,16 +34,6 @@ class IsAdmin(Filter):
 
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
-
-
-def describe_user(user: AppUser) -> str:
-    """Строка о пользователе для админа (HTML)."""
-    parts = [f"<code>{user.telegram_chat_id}</code>"]
-    if user.first_name:
-        parts.append(html.escape(user.first_name))
-    if user.username:
-        parts.append(f"@{html.escape(user.username)}")
-    return " ".join(parts)
 
 
 async def _notify(bot: Bot, chat_id: int, text: str, **kwargs) -> bool:
@@ -177,21 +164,34 @@ async def _handle_command(
 
 @router.message(Command("users"))
 async def handle_users(message: Message, access: AccessControl) -> None:
+    """Панель доступа: список пользователей с кнопками; нажатие обновляет список на месте."""
     async with async_session_maker() as session:
         users = await UserService.list_users(session)
-    if not users:
-        await message.answer("Пользователей пока нет.")
+    text, markup = render_users_panel(users, access.admin_ids)
+    await message.answer(text, reply_markup=markup, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith(PANEL_APPROVE_PREFIX) | F.data.startswith(PANEL_BLOCK_PREFIX))
+async def handle_panel_button(callback: CallbackQuery, bot: Bot, access: AccessControl) -> None:
+    approve = callback.data.startswith(PANEL_APPROVE_PREFIX)
+    prefix = PANEL_APPROVE_PREFIX if approve else PANEL_BLOCK_PREFIX
+    chat_id = _target_id(callback.data, prefix)
+    if chat_id is None or access.is_admin(chat_id):
+        await callback.answer()
         return
 
-    lines = ["👥 <b>Пользователи бота</b>"]
-    for status in (ACCESS_PENDING, ACCESS_APPROVED, ACCESS_BLOCKED):
-        group = [u for u in users if u.access == status]
-        if not group:
-            continue
-        lines.append(f"\n{ACCESS_ICONS[status]} <b>{ACCESS_TITLES[status]}</b> ({len(group)})")
-        for user in group:
-            mark = " (админ)" if access.is_admin(user.telegram_chat_id) else ""
-            lines.append(f"• {describe_user(user)}{mark}, с {user.created_at:%d.%m.%Y}")
-    lines.append("\nОткрыть доступ: <code>/approve chat_id</code>, закрыть: <code>/revoke chat_id</code>")
-    for chunk in MessageService.chunk_message("\n".join(lines)):
-        await message.answer(chunk, parse_mode="HTML")
+    user = await _set_access(bot, access, chat_id, ACCESS_APPROVED if approve else ACCESS_BLOCKED)
+    if user is None:
+        notice = "Пользователя уже нет в базе."
+    else:
+        notice = f"{'✅ Доступ открыт' if approve else '⛔ Доступ закрыт'}: {user.first_name or chat_id}"
+
+    async with async_session_maker() as session:
+        users = await UserService.list_users(session)
+    text, markup = render_users_panel(users, access.admin_ids)
+    try:
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
+    except TelegramBadRequest as exc:   # повторное нажатие: список не изменился
+        if "message is not modified" not in str(exc):
+            raise
+    await callback.answer(notice)

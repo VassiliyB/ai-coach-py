@@ -8,6 +8,7 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, ReplyKeyboardRemove
 
+from bot.commands import commands_help
 from bot.keyboards import get_garmin_auth_keyboard
 from bot.states import AuthStates
 from clients.garmin import (
@@ -53,14 +54,8 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
     if garmin.has_saved_tokens(chat_id) and user.garmin_linked:
         await message.answer(
             f"👋 С возвращением, <b>{first_name}</b>!\n\n"
-            "Ваш Garmin Connect привязан. Доступные команды:\n"
-            "• <code>/sync</code> — обновить спортивный паспорт за 90 дней\n"
-            "• <code>/plan</code> — составить макроплан к забегу\n"
-            "• <code>/show_plan</code> — текущий план, неделя и цель на забег\n"
-            "• <code>/analyze</code> — разобрать последнюю пробежку\n"
-            "• <code>/ask</code> — вопрос тренеру (ответ по книгам Дэниелса и Фицджеральда)\n"
-            "• <code>/timezone</code> — часовой пояс для расписаний\n"
-            "• <code>/delete_me</code> — удалить все свои данные",
+            "Ваш Garmin Connect привязан. Доступные команды (они же в меню слева от поля ввода):\n"
+            f"{commands_help()}",
             reply_markup=ReplyKeyboardRemove(),   # убирает кнопку входа, оставшуюся с момента подключения
             parse_mode="HTML",
         )

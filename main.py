@@ -5,6 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from bot.commands import setup_bot_commands
 from bot.handlers import access as access_handlers
 from bot.handlers import analyze, ask, garmin_export, plan, show_plan, start, sync
 from bot.handlers import settings as settings_handlers
@@ -87,6 +88,12 @@ async def main() -> None:
     dp.include_router(settings_handlers.router)  # до plan: его хендлер состояния ловит любой текст
     dp.include_router(show_plan.router)
     dp.include_router(plan.router)
+
+    # Меню команд Telegram: общее и расширенное для админов (сбой меню не мешает запуску)
+    try:
+        await setup_bot_commands(bot, settings.ADMIN_CHAT_IDS)
+    except Exception:
+        logger.exception("Не удалось задать меню команд")
 
     # 5. Планировщик
     scheduler_service.start()
