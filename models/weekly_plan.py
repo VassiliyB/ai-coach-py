@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -36,6 +36,8 @@ class WeeklyPlan(Base):
     week_end_date: Mapped[date] = mapped_column(Date, nullable=False)
     # Структурный план (WeekPlan) или {"legacy_text": "..."} для старых текстовых планов
     plan_details: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # Выгруженные в календарь Garmin тренировки: [{"date": "YYYY-MM-DD", "workout_id": int}]
+    garmin_workouts: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, server_default=func.now(), nullable=False
     )

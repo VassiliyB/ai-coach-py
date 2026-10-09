@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from bot.keyboards import get_garmin_export_keyboard
 from database import async_session_maker
 from models.athlete_profile import AthleteProfile
 from models.training_plan import TrainingPlan
@@ -99,7 +100,7 @@ class TrainingSchedulerService:
 
         # 2. Сохранение (повторная генерация той же недели перезаписывает запись)
         async with async_session_maker() as session:
-            await UserService.save_weekly_plan(
+            weekly = await UserService.save_weekly_plan(
                 session=session,
                 user_id=user.id,
                 training_plan_id=plan.id,
@@ -120,8 +121,14 @@ class TrainingSchedulerService:
             zones=zones,
             max_hr=getattr(profile, "max_heart_rate", None),
         )
-        for chunk in MessageService.chunk_message(text):
-            await self.bot.send_message(chat_id=user.telegram_chat_id, text=chunk, parse_mode="HTML")
+        # Кнопка выгрузки в календарь Garmin под последней частью расписания
+        chunks = MessageService.chunk_message(text)
+        markup = get_garmin_export_keyboard(weekly.id) if user.garmin_linked else None
+        for i, chunk in enumerate(chunks):
+            await self.bot.send_message(
+                chat_id=user.telegram_chat_id, text=chunk, parse_mode="HTML",
+                reply_markup=markup if i == len(chunks) - 1 else None,
+            )
         return WeekStatus.SENT
 
     async def weekly_distribution_tick(self, now_utc: Optional[datetime] = None) -> int:

@@ -98,6 +98,15 @@ class UserService:
         await session.commit()
         return weekly
 
+    @staticmethod
+    async def get_weekly_plan(session: AsyncSession, weekly_id: int, user_id: int) -> Optional[WeeklyPlan]:
+        return await PlanRepository(session).get_weekly(weekly_id, user_id)
+
+    @staticmethod
+    async def set_garmin_workouts(session: AsyncSession, weekly_id: int, workouts: List[Dict[str, Any]]) -> None:
+        await PlanRepository(session).set_garmin_workouts(weekly_id, workouts)
+        await session.commit()
+
     # ---------------- Обработанные активности (поллинг Garmin) ----------------
 
     @staticmethod

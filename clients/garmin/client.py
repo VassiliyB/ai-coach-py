@@ -160,6 +160,48 @@ class GarminClient:
 
         return aggregate_profile_90d(runs, vo2_max, days=days)
 
+    def _api_call(self, func: Any, *args: Any) -> Any:
+        """Вызов API Garmin с переводом ошибок библиотеки в наши исключения."""
+        try:
+            return func(*args)
+        except GarminConnectTooManyRequestsError as exc:
+            raise GarminRateLimitError("Превышен лимит запросов к Garmin API (429).") from exc
+        except GarminConnectAuthenticationError as exc:
+            raise GarminAuthError("Сессия истекла. Требуется повторный вход.") from exc
+        except Exception as exc:
+            raise GarminClientError(f"Сбой запроса к Garmin: {exc}") from exc
+
+    def _schedule_workouts_sync(
+        self, chat_id: int, workouts: List[Tuple[str, Dict[str, Any]]], replace_ids: List[int],
+    ) -> List[Dict[str, Any]]:
+        client = self._init_session_sync(chat_id)
+
+        # Старые тренировки этой недели: удаление шаблона убирает его и из календаря
+        for workout_id in replace_ids:
+            try:
+                self._api_call(client.delete_workout, workout_id)
+            except (GarminRateLimitError, GarminAuthError):
+                raise
+            except GarminClientError as exc:  # пользователь мог удалить тренировку сам
+                logger.warning("Не удалось удалить тренировку %s (chat_id=%s): %s", workout_id, chat_id, exc)
+
+        created: List[Dict[str, Any]] = []
+        try:
+            for day_iso, workout in workouts:
+                uploaded = self._api_call(client.upload_workout, workout)
+                workout_id = int(uploaded["workoutId"])
+                created.append({"date": day_iso, "workout_id": workout_id})
+                self._api_call(client.schedule_workout, workout_id, day_iso)
+        except Exception:
+            # Неделя выгружается целиком или никак: иначе при повторе в календаре остались бы дубли
+            for item in created:
+                try:
+                    client.delete_workout(item["workout_id"])
+                except Exception as exc:
+                    logger.warning("Откат: тренировка %s не удалена: %s", item["workout_id"], exc)
+            raise
+        return created
+
     # ---------------- Публичный асинхронный интерфейс ----------------
 
     async def login_start(self, chat_id: int, email: str, password: str) -> str:
@@ -180,6 +222,16 @@ class GarminClient:
 
     async def get_athlete_profile_90d(self, chat_id: int, days: int = 90) -> Dict[str, Any]:
         return await asyncio.to_thread(self._fetch_profile_90d_sync, chat_id, days)
+
+    async def schedule_workouts(
+        self, chat_id: int, workouts: List[Tuple[str, Dict[str, Any]]], replace_ids: Optional[List[int]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Загружает тренировки (дата YYYY-MM-DD, JSON) в библиотеку и ставит в календарь.
+
+        replace_ids: ранее выгруженные тренировки, которые удаляются перед загрузкой.
+        Возвращает [{"date", "workout_id"}]. При ошибке уже загруженные в этом вызове удаляются.
+        """
+        return await asyncio.to_thread(self._schedule_workouts_sync, chat_id, workouts, replace_ids or [])
 
     async def clear_session(self, chat_id: int) -> None:
         """Забывает пользователя: незавершённый вход по MFA в памяти и файл токенов на диске."""

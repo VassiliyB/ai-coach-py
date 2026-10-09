@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from bot.handlers import analyze, plan, start, sync
+from bot.handlers import analyze, garmin_export, plan, start, sync
 from bot.handlers import settings as settings_handlers
 from bot.middlewares import UserLockMiddleware
 from clients.garmin import GarminClient
@@ -59,12 +59,15 @@ async def main() -> None:
 
     # Хендлеры с флагом user_lock не запускаются, пока у пользователя идёт другая тяжёлая операция.
     # Внутренний middleware: флаги хендлера видны только после его выбора; применяется ко всем роутерам
-    dp.message.middleware(UserLockMiddleware(user_locks))
+    lock_middleware = UserLockMiddleware(user_locks)
+    dp.message.middleware(lock_middleware)
+    dp.callback_query.middleware(lock_middleware)
 
     # 4. Роутеры. Порядок важен: команды раньше общих хендлеров состояний.
     dp.include_router(start.router)
     dp.include_router(sync.router)
     dp.include_router(analyze.router)
+    dp.include_router(garmin_export.router)
     dp.include_router(settings_handlers.router)  # до plan: его хендлер состояния ловит любой текст
     dp.include_router(plan.router)
 

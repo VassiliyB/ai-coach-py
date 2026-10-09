@@ -119,3 +119,25 @@ def test_flag_from_real_router_decorator_reaches_middleware():
 
     result = asyncio.run(UserLockMiddleware(locks)(call, msg, {"handler": handler_object}))
     assert result is None and "ещё выполняется <b>/analyze</b>" in msg.answers[0]
+
+
+def test_middleware_blocks_callback_with_alert():
+    from aiogram.types import CallbackQuery
+
+    alerts = []
+
+    class FakeCallback(CallbackQuery):
+        async def answer(self, text=None, show_alert=None, **kwargs):
+            alerts.append((text, show_alert))
+
+    locks = UserLocks()
+    locks.try_acquire(1, "/sync")
+    callback = FakeCallback.model_construct(id="1", message=SimpleNamespace(chat=SimpleNamespace(id=1)))
+    calls = []
+
+    async def handler(event, data):
+        calls.append(1)
+
+    result = asyncio.run(UserLockMiddleware(locks)(handler, callback, data_with_flag("выгрузка в Garmin")))
+    assert result is None and calls == []
+    assert alerts and alerts[0][1] is True and "/sync" in alerts[0][0]

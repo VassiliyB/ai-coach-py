@@ -48,3 +48,13 @@ def get_delete_confirm_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🗑 Удалить всё", callback_data=DELETE_CONFIRM),
         InlineKeyboardButton(text="Отмена", callback_data=DELETE_CANCEL),
     ]])
+
+
+GARMIN_EXPORT_PREFIX = "garmin_export:"
+
+
+def get_garmin_export_keyboard(weekly_id: int) -> InlineKeyboardMarkup:
+    """Кнопка под расписанием недели: выгрузить тренировки в календарь Garmin."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📅 В календарь Garmin", callback_data=f"{GARMIN_EXPORT_PREFIX}{weekly_id}"),
+    ]])

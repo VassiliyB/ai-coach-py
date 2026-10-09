@@ -8,7 +8,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.keyboards import get_target_distances_keyboard
+from bot.keyboards import get_garmin_export_keyboard, get_target_distances_keyboard
 from bot.states import PlanCreationStates
 from clients.ai_client import AIClientError
 from database import async_session_maker
@@ -111,6 +111,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
             user = await UserService.get_or_create_user(session, message.chat.id)
             profile = await UserService.get_athlete_profile(session, user.id)
             user_id = user.id
+            garmin_linked = user.garmin_linked
             profile_dict = build_profile_context(profile)
             zones = zones_for_profile(profile)
 
@@ -145,7 +146,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
         await _send_intro_days(
             message, plan_generator, profile_dict, target_race, today,
             weekly_km=weekly_km, zones=zones, max_hr=getattr(profile, "max_heart_rate", None),
-            user_id=user_id, plan_id=saved.id,
+            user_id=user_id, plan_id=saved.id, garmin_linked=garmin_linked,
         )
 
     except PlanGenerationError as exc:
@@ -174,6 +175,7 @@ async def _send_intro_days(
     max_hr: Optional[int],
     user_id: int,
     plan_id: int,
+    garmin_linked: bool,
 ) -> None:
     """Тренировки с завтрашнего дня до воскресенья по поясу пользователя.
 
@@ -188,14 +190,16 @@ async def _send_intro_days(
             athlete_profile=profile_dict, target_race=target_race, days=days, weekly_km=weekly_km, zones=zones,
         )
         async with async_session_maker() as session:
-            await UserService.save_weekly_plan(
+            weekly = await UserService.save_weekly_plan(
                 session=session, user_id=user_id, training_plan_id=plan_id,
                 week_start=monday_of(today), week_end=days[-1], plan=week,
             )
         await status_msg.delete()
         text = render_intro_days(week, days, zones=zones, max_hr=max_hr)
-        for chunk in MessageService.chunk_message(text):
-            await message.answer(chunk, parse_mode="HTML")
+        chunks = MessageService.chunk_message(text)
+        markup = get_garmin_export_keyboard(weekly.id) if garmin_linked else None
+        for i, chunk in enumerate(chunks):
+            await message.answer(chunk, parse_mode="HTML", reply_markup=markup if i == len(chunks) - 1 else None)
     except Exception as exc:
         logger.warning("Вводные дни не составлены (chat_id=%s): %s", message.chat.id, exc)
         await status_msg.edit_text(

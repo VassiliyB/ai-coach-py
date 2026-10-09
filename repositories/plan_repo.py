@@ -70,3 +70,15 @@ class PlanRepository:
             .execution_options(populate_existing=True)
         )
         return (await self.session.execute(stmt)).scalar_one()
+
+    async def get_weekly(self, weekly_id: int, user_id: int) -> Optional[WeeklyPlan]:
+        """Неделя пользователя по id (чужую не вернёт)."""
+        result = await self.session.execute(
+            select(WeeklyPlan).where(WeeklyPlan.id == weekly_id, WeeklyPlan.user_id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def set_garmin_workouts(self, weekly_id: int, workouts: List[Dict[str, Any]]) -> None:
+        await self.session.execute(
+            update(WeeklyPlan).where(WeeklyPlan.id == weekly_id).values(garmin_workouts=workouts)
+        )
