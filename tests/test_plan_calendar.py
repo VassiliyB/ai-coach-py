@@ -2,7 +2,15 @@ from datetime import date, timedelta
 
 import pytest
 
-from services.plan_calendar import intro_days, monday_of, next_week_dates, plan_total_weeks, plan_week_number
+from services.plan_calendar import (
+    current_plan_week,
+    intro_days,
+    monday_of,
+    next_week_dates,
+    plan_start_monday,
+    plan_total_weeks,
+    plan_week_number,
+)
 
 # План из живой проверки: создан в четверг 08.10.2026, забег в воскресенье 03.01.2027, 12 недель
 RACE = date(2027, 1, 3)
@@ -77,3 +85,23 @@ def test_intro_days_end_before_first_plan_week():
     today = date(2026, 10, 7)
     first_monday, _ = next_week_dates(today)
     assert intro_days(today)[-1] + timedelta(days=1) == first_monday
+
+
+# ---------- текущая неделя для /show_plan ----------
+
+def test_plan_start_monday_matches_week_one():
+    start = plan_start_monday(RACE, 12)
+    assert start == date(2026, 10, 12)                      # следующий понедельник после создания
+    assert plan_week_number(RACE, 12, start) == 1
+
+
+@pytest.mark.parametrize("today,expected", [
+    (date(2026, 10, 8), None),       # вводные дни: план ещё не начался
+    (date(2026, 10, 12), 1),
+    (date(2026, 10, 18), 1),         # воскресенье первой недели
+    (date(2026, 11, 4), 4),
+    (date(2027, 1, 3), 12),          # день забега
+    (date(2027, 1, 4), None),        # забег прошёл
+])
+def test_current_plan_week(today, expected):
+    assert current_plan_week(today, RACE, 12) == expected

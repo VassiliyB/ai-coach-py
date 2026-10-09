@@ -1,22 +1,41 @@
 # bot/handlers/plan.py
 import logging
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.keyboards import get_garmin_export_keyboard, get_target_distances_keyboard
+from bot.keyboards import (
+    GOAL_NONE,
+    GOAL_SUGGESTED,
+    get_garmin_export_keyboard,
+    get_goal_keyboard,
+    get_target_distances_keyboard,
+)
 from bot.states import PlanCreationStates
 from clients.ai_client import AIClientError
 from database import async_session_maker
-from services.coach_service import TrainingZones, build_profile_context, zones_for_profile
+from services.coach_service import MAX_VDOT, MIN_VDOT, TrainingZones, build_profile_context, zones_for_profile
 from services.message_service import MessageService
 from services.plan_calendar import intro_days, monday_of, plan_total_weeks
 from services.plan_generator import PlanGenerationError, PlanGenerator
 from services.plan_renderer import render_intro_days, render_macro
+from services.race_goal import (
+    GOAL_FORMATS,
+    RACE_DISTANCES,
+    GoalAssessment,
+    assess_goal,
+    format_duration,
+    goal_pace_text,
+    goal_prompt_text,
+    parse_goal,
+    realistic_goal_s,
+    render_goal_line,
+    render_goal_rejection,
+)
 from services.scheduler_service import TrainingSchedulerService, WeekStatus
 from services.user_service import UserService
 from services.user_time import local_today
@@ -24,12 +43,7 @@ from services.user_time import local_today
 logger = logging.getLogger(__name__)
 router = Router()
 
-DISTANCE_NAMES = {
-    "dist_5km": "5 км",
-    "dist_10km": "10 км",
-    "dist_21km": "21.1 км (Полумарафон)",
-    "dist_42km": "42.2 км (Марафон)",
-}
+NO_GOAL_WORDS = {"без цели", "нет", "-"}
 
 
 @router.message(Command("plan"))
@@ -56,9 +70,9 @@ async def handle_plan_start(message: Message, state: FSMContext) -> None:
 @router.callback_query(PlanCreationStates.waiting_for_distance, F.data.startswith("dist_"))
 async def handle_distance_selected(callback: CallbackQuery, state: FSMContext) -> None:
     """Выбор дистанции и переход к ожиданию даты старта."""
-    distance_name = DISTANCE_NAMES.get(callback.data, "Забег")
+    distance_name, distance_m = RACE_DISTANCES.get(callback.data, ("Забег", None))
 
-    await state.update_data(target_race=distance_name)
+    await state.update_data(target_race=distance_name, distance_m=distance_m)
     await state.set_state(PlanCreationStates.waiting_for_date)
 
     await callback.message.edit_text(
@@ -69,9 +83,14 @@ async def handle_distance_selected(callback: CallbackQuery, state: FSMContext) -
     await callback.answer()
 
 
-@router.message(PlanCreationStates.waiting_for_date, flags={"user_lock": "составление плана"})
-async def handle_race_date_entered(message: Message, state: FSMContext, plan_generator: PlanGenerator) -> None:
-    """Валидация даты, генерация структурного макроплана, запись в БД и показ пользователю."""
+def _current_vdot(profile: Any) -> Optional[float]:
+    vdot = getattr(profile, "vdot", None)
+    return vdot if vdot and MIN_VDOT <= vdot <= MAX_VDOT else None
+
+
+@router.message(PlanCreationStates.waiting_for_date)
+async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
+    """Валидация даты и переход к выбору цели: прогноз по текущей форме и предложенная реалистичная цель."""
     date_text = (message.text or "").strip()
     try:
         race_date = datetime.strptime(date_text, "%d.%m.%Y").date()
@@ -84,6 +103,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
 
     async with async_session_maker() as session:
         user = await UserService.get_or_create_user(session, message.chat.id)
+        profile = await UserService.get_athlete_profile(session, user.id)
     today = local_today(UserService.timezone_of(user))  # дата у пользователя, а не на сервере
 
     days_left = (race_date - today).days
@@ -96,8 +116,113 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
     # Тот же календарь, что у рассылки: от следующего понедельника до недели забега
     total_weeks = max(2, plan_total_weeks(today, race_date))
     data = await state.get_data()
-    target_race = data.get("target_race", "Бег")
+    distance_m = data.get("distance_m")
+    vdot = _current_vdot(profile)
+
+    suggested = None
+    if vdot and distance_m:
+        suggested = realistic_goal_s(vdot, distance_m, total_weeks)
+        forecast = assess_goal(vdot, suggested, distance_m, total_weeks)
+        hint = (
+            f"По текущей форме (VDOT {vdot:.1f}) прогноз: <b>{format_duration(forecast.predicted_now_s)}</b>.\n"
+            f"За {total_weeks} нед. реально выйти примерно на <b>{format_duration(forecast.best_realistic_s)}</b>, "
+            f"предлагаю цель <b>{format_duration(suggested)}</b> ({goal_pace_text(suggested, distance_m)}).\n\n"
+            f"{GOAL_FORMATS}"
+        )
+    else:
+        hint = (
+            "VDOT ещё не рассчитан (нужны пробежки от 3 км, затем /sync), поэтому оценить цель по времени "
+            "нельзя. План будет построен по текущей форме."
+        )
+
+    await state.update_data(
+        race_date=race_date.isoformat(), total_weeks=total_weeks, suggested_goal_s=suggested,
+    )
+    await state.set_state(PlanCreationStates.waiting_for_goal)
+    await message.answer(
+        f"🏁 <b>Цель на забег</b> ({total_weeks} нед. подготовки)\n\n{hint}",
+        reply_markup=get_goal_keyboard(format_duration(suggested) if suggested else None),
+        parse_mode="HTML",
+    )
+
+
+@router.message(PlanCreationStates.waiting_for_goal, flags={"user_lock": "составление плана"})
+async def handle_goal_entered(message: Message, state: FSMContext, plan_generator: PlanGenerator) -> None:
+    """Цель временем или темпом: нереалистичную не принимаем, объясняем почему и что достижимо."""
+    data = await state.get_data()
+    distance_m = data.get("distance_m")
+    async with async_session_maker() as session:
+        user = await UserService.get_or_create_user(session, message.chat.id)
+        profile = await UserService.get_athlete_profile(session, user.id)
+    vdot = _current_vdot(profile)
+
+    if not vdot or not distance_m:
+        await message.answer(
+            "ℹ️ Без VDOT цель по времени оценить нельзя. Нажмите «Без цели» или выполните /sync и начните /plan заново.",
+            reply_markup=get_goal_keyboard(),
+        )
+        return
+
+    if (message.text or "").strip().lower() in NO_GOAL_WORDS:
+        await _create_plan(message, state, plan_generator, None)
+        return
+
+    goal_s = parse_goal(message.text or "", distance_m)
+    if goal_s is None:
+        await message.answer(f"❌ Не удалось распознать цель.\n{GOAL_FORMATS}", parse_mode="HTML")
+        return
+
+    assessment = assess_goal(vdot, goal_s, distance_m, data["total_weeks"])
+    if not assessment.accepted:
+        suggested = data.get("suggested_goal_s")
+        await message.answer(
+            f"{render_goal_rejection(assessment, data['total_weeks'])}\n\n"
+            f"Введите другую цель или выберите кнопку ниже.\n{GOAL_FORMATS}",
+            reply_markup=get_goal_keyboard(format_duration(suggested) if suggested else None),
+            parse_mode="HTML",
+        )
+        return
+
+    await _create_plan(message, state, plan_generator, assessment)
+
+
+@router.callback_query(
+    PlanCreationStates.waiting_for_goal, F.data.in_({GOAL_NONE, GOAL_SUGGESTED}),
+    flags={"user_lock": "составление плана"},
+)
+async def handle_goal_button(callback: CallbackQuery, state: FSMContext, plan_generator: PlanGenerator) -> None:
+    """«Без цели» или предложенная реалистичная цель."""
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    data = await state.get_data()
+
+    assessment = None
+    suggested = data.get("suggested_goal_s")
+    if callback.data == GOAL_SUGGESTED and suggested:
+        async with async_session_maker() as session:
+            user = await UserService.get_or_create_user(session, callback.message.chat.id)
+            profile = await UserService.get_athlete_profile(session, user.id)
+        vdot = _current_vdot(profile)
+        if vdot:
+            assessment = assess_goal(vdot, suggested, data["distance_m"], data["total_weeks"])
+    await _create_plan(callback.message, state, plan_generator, assessment)
+
+
+async def _create_plan(
+    message: Message,
+    state: FSMContext,
+    plan_generator: PlanGenerator,
+    assessment: Optional[GoalAssessment],
+) -> None:
+    """Генерация структурного макроплана, запись в БД и показ пользователю. assessment: принятая цель или None."""
+    data: Dict[str, Any] = await state.get_data()
     await state.clear()
+    target_race = data.get("target_race", "Бег")
+    race_date = date.fromisoformat(data["race_date"])
+    total_weeks = data["total_weeks"]
+    distance_m = data.get("distance_m")
+    goal_s = int(assessment.target_time_s) if assessment else None
+    goal_text = goal_prompt_text(assessment, distance_m) if assessment and distance_m else None
 
     status_msg = await message.answer(
         f"🧠 <b>Тренер рассчитывает 4-фазный план ({total_weeks} нед.)...</b>\n"
@@ -112,6 +237,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
             profile = await UserService.get_athlete_profile(session, user.id)
             user_id = user.id
             garmin_linked = user.garmin_linked
+            today = local_today(UserService.timezone_of(user))
             profile_dict = build_profile_context(profile)
             zones = zones_for_profile(profile)
 
@@ -121,6 +247,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
             target_race=target_race,
             race_date=race_date.isoformat(),
             total_weeks=total_weeks,
+            goal_text=goal_text,
         )
 
         # 3. Сохранение в БД (старый активный план деактивируется в той же транзакции)
@@ -132,12 +259,14 @@ async def handle_race_date_entered(message: Message, state: FSMContext, plan_gen
                 race_date=race_date,
                 total_weeks=total_weeks,
                 plan=macro,
+                target_time_s=goal_s,
             )
 
         await status_msg.delete()
 
-        # 4. Текст собирает код: зоны темпа из VDOT, текст модели экранирован
-        text = render_macro(macro, target_race, race_date=race_date, zones=zones)
+        # 4. Текст собирает код: зоны темпа из VDOT, цель из race_goal, текст модели экранирован
+        goal_line = render_goal_line(assessment, distance_m) if assessment and distance_m else None
+        text = render_macro(macro, target_race, race_date=race_date, zones=zones, goal_line=goal_line)
         for chunk in MessageService.chunk_message(text):
             await message.answer(chunk, parse_mode="HTML")
 

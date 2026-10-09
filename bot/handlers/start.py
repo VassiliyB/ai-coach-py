@@ -56,6 +56,7 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
             "Ваш Garmin Connect привязан. Доступные команды:\n"
             "• <code>/sync</code> — обновить спортивный паспорт за 90 дней\n"
             "• <code>/plan</code> — составить макроплан к забегу\n"
+            "• <code>/show_plan</code> — текущий план, неделя и цель на забег\n"
             "• <code>/analyze</code> — разобрать последнюю пробежку\n"
             "• <code>/timezone</code> — часовой пояс для расписаний\n"
             "• <code>/delete_me</code> — удалить все свои данные",

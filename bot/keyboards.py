@@ -1,4 +1,6 @@
 # bot/keyboards.py
+from typing import Optional
+
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -57,4 +59,39 @@ def get_garmin_export_keyboard(weekly_id: int) -> InlineKeyboardMarkup:
     """Кнопка под расписанием недели: выгрузить тренировки в календарь Garmin."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="📅 В календарь Garmin", callback_data=f"{GARMIN_EXPORT_PREFIX}{weekly_id}"),
+    ]])
+
+
+GOAL_NONE = "goal:none"
+GOAL_SUGGESTED = "goal:suggested"
+
+
+def get_goal_keyboard(suggested: Optional[str] = None) -> InlineKeyboardMarkup:
+    """Шаг цели в /plan: предложенная реалистичная цель (если VDOT известен) и план без цели."""
+    rows = []
+    if suggested:
+        rows.append([InlineKeyboardButton(text=f"🎯 Цель {suggested}", callback_data=GOAL_SUGGESTED)])
+    rows.append([InlineKeyboardButton(text="Без цели, по текущей форме", callback_data=GOAL_NONE)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+PLAN_GOAL_EDIT = "plan_goal:edit"
+PLAN_GOAL_CLEAR = "plan_goal:clear"
+PLAN_GOAL_CANCEL = "plan_goal:cancel"
+
+
+def get_show_plan_keyboard(has_goal: bool, can_set_goal: bool) -> Optional[InlineKeyboardMarkup]:
+    """Кнопки под /show_plan: изменить цель (если её можно оценить по VDOT) и убрать цель."""
+    rows = []
+    if can_set_goal:
+        text = "✏️ Изменить цель" if has_goal else "🎯 Задать цель"
+        rows.append([InlineKeyboardButton(text=text, callback_data=PLAN_GOAL_EDIT)])
+    if has_goal:
+        rows.append([InlineKeyboardButton(text="🗑 Убрать цель", callback_data=PLAN_GOAL_CLEAR)])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
+def get_goal_edit_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Отмена", callback_data=PLAN_GOAL_CANCEL),
     ]])

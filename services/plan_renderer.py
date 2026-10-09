@@ -148,16 +148,25 @@ def render_macro(
     target_race: str,
     race_date: Optional[date] = None,
     zones: Optional[TrainingZones] = None,
+    goal_line: Optional[str] = None,
 ) -> str:
-    """Макроцикл: фазы с диапазонами недель, километраж по неделям, зоны темпа."""
+    """Макроцикл: фазы с диапазонами недель, километраж по неделям, зоны темпа.
+
+    goal_line: готовая строка о цели (race_goal.render_goal_line), уже в HTML.
+    """
     summary = []
     if race_date:
         summary.append(f"Забег: {race_date.strftime('%d.%m.%Y')}")
     summary += [f"{macro.total_weeks} нед.", f"пик {_km(max(macro.weekly_km))} км/нед"]
 
     lines = [f"🎯 <b>План подготовки: {_e(target_race)}</b>", SEP.join(summary), ""]
+    if goal_line:
+        lines += [goal_line, ""]
     if zones is not None:
-        lines += [render_zones(zones), ""]
+        lines += [render_zones(zones)]
+        if goal_line:
+            lines.append("<i>Темпы тренировок по текущей форме, а не по цели: обновятся после /sync.</i>")
+        lines.append("")
 
     start = 1
     for phase in macro.phases:
@@ -177,3 +186,63 @@ def render_macro(
         lines.append("⚠️ <b>Важно</b>")
         lines += [f"• {_e(note)}" for note in macro.notes]
     return "\n".join(lines).strip()
+
+
+def render_plan_overview(
+    *,
+    target_race: str,
+    race_date: date,
+    today: date,
+    total_weeks: int,
+    week_number: Optional[int],
+    start_monday: date,
+    macro: Optional[MacroPlan] = None,
+    goal_line: Optional[str] = None,
+    forecast_line: Optional[str] = None,
+) -> str:
+    """Обзор активного плана для /show_plan.
+
+    week_number: текущая неделя (None до начала плана или после забега).
+    goal_line и forecast_line: готовые строки (HTML) от race_goal, все числа посчитаны кодом.
+    """
+    days_left = (race_date - today).days
+    if days_left > 0:
+        when = f"через {days_left} дн."
+    elif days_left == 0:
+        when = "сегодня!"
+    else:
+        when = "прошёл"
+    lines = [
+        f"📋 <b>План: {_e(target_race)}</b>",
+        f"🏁 Забег: <b>{race_date:%d.%m.%Y}</b>{SEP}{when}",
+        f"📆 Всего недель: {total_weeks}",
+    ]
+
+    if days_left < 0:
+        lines.append("План завершён. Новый план: /plan")
+    elif week_number is None:
+        lines.append("Сейчас: <b>вводные дни</b> (лёгкий бег до старта плана)")
+        lines.append(f"Неделя №1 начнётся в понедельник {start_monday:%d.%m}.")
+        if macro is not None:
+            first = next(p for p in macro.phases if p.weeks)
+            lines.append(f"Первый период: Фаза {first.number} · {_e(first.name)}")
+    else:
+        lines.append(f"Сейчас: <b>неделя {week_number} из {total_weeks}</b>")
+        if macro is not None:
+            phase = macro.phase_for_week(week_number)
+            lines.append(f"Период: <b>Фаза {phase.number} · {_e(phase.name)}</b>")
+            if phase.focus.strip():
+                lines.append(f"<i>{_e(phase.focus.strip())}</i>")
+            km = macro.weekly_km[min(week_number, len(macro.weekly_km)) - 1]
+            lines.append(f"Плановый объём недели: {_km(km)} км")
+    if macro is None:
+        lines.append("ℹ️ План в старом формате: фазы не показать, пересоздайте его через /plan.")
+
+    lines.append("")
+    if goal_line:
+        lines.append(goal_line)
+    else:
+        lines.append("⏱ Цель по времени не задана: план строится по текущей форме.")
+        if forecast_line:
+            lines.append(forecast_line)
+    return "\n".join(lines)

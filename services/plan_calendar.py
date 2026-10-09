@@ -48,3 +48,15 @@ def plan_week_number(race_date: date, total_weeks: int, week_monday: date) -> Op
     if number > total_weeks:
         return None
     return max(1, number)
+
+
+def plan_start_monday(race_date: date, total_weeks: int) -> date:
+    """Понедельник недели №1: от недели забега назад на total_weeks - 1 недель."""
+    return monday_of(race_date) - timedelta(weeks=max(1, total_weeks) - 1)
+
+
+def current_plan_week(today: date, race_date: date, total_weeks: int) -> Optional[int]:
+    """Номер текущей недели плана (1..total_weeks). None до начала плана и после забега."""
+    if today > race_date or today < plan_start_monday(race_date, total_weeks):
+        return None
+    return plan_week_number(race_date, total_weeks, today)

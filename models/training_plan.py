@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -40,6 +40,8 @@ class TrainingPlan(Base):
     target_race: Mapped[str] = mapped_column(String(255), nullable=False)
     race_date: Mapped[date] = mapped_column(Date, nullable=False)
     total_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Целевое время забега в секундах (проверено services.race_goal); NULL: цель «по текущей форме»
+    target_time_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Структурный план (MacroPlan) или {"legacy_text": "..."} для старых текстовых планов
     plan_details: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)

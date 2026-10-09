@@ -20,7 +20,8 @@ class PlanRepository:
         return result.scalar_one_or_none()
 
     async def create_active(
-        self, user_id: int, target_race: str, race_date: date, total_weeks: int, plan_details: Dict[str, Any]
+        self, user_id: int, target_race: str, race_date: date, total_weeks: int, plan_details: Dict[str, Any],
+        target_time_s: Optional[int] = None,
     ) -> TrainingPlan:
         """Деактивирует старые планы и создаёт новый в одной транзакции."""
         # UPDATE выполняется сразу (не через autoflush), поэтому частичный unique-индекс не сработает
@@ -31,7 +32,7 @@ class PlanRepository:
         )
         plan = TrainingPlan(
             user_id=user_id, target_race=target_race, race_date=race_date,
-            total_weeks=total_weeks, plan_details=plan_details, active=True,
+            total_weeks=total_weeks, plan_details=plan_details, active=True, target_time_s=target_time_s,
         )
         self.session.add(plan)
         await self.session.flush()
@@ -81,4 +82,9 @@ class PlanRepository:
     async def set_garmin_workouts(self, weekly_id: int, workouts: List[Dict[str, Any]]) -> None:
         await self.session.execute(
             update(WeeklyPlan).where(WeeklyPlan.id == weekly_id).values(garmin_workouts=workouts)
+        )
+
+    async def set_target_time(self, plan_id: int, target_time_s: Optional[int]) -> None:
+        await self.session.execute(
+            update(TrainingPlan).where(TrainingPlan.id == plan_id).values(target_time_s=target_time_s)
         )

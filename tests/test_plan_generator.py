@@ -285,3 +285,12 @@ def test_intro_days_prompt_and_retry_on_quality():
     assert "не длиннее 11.3 км" in prompt
     assert ai.calls[0]["response_schema"] is WeekPlan
     assert "недопустима во вводные дни" in ai.calls[1]["messages"][-1]["content"]
+
+
+def test_macro_prompt_includes_goal_only_when_given():
+    gen, ai = generator([dumps(macro_data()), dumps(macro_data())])
+    asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12))
+    asyncio.run(gen.generate_macro(PROFILE, "21.1 км", "2027-06-15", 12, goal_text="Целевое время: 1:45:00"))
+    without, with_goal = (c["messages"][-1]["content"] for c in ai.calls)
+    assert "Целевое время" not in without
+    assert "Целевое время: 1:45:00" in with_goal

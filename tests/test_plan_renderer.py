@@ -2,7 +2,7 @@ from datetime import date
 
 from schemas.plan import MacroPlan, WeekPlan
 from services.coach_service import calculate_zones
-from services.plan_renderer import render_macro, render_week
+from services.plan_renderer import render_macro, render_plan_overview, render_week
 
 ZONES = calculate_zones(50)
 
@@ -174,3 +174,48 @@ def test_intro_days_show_only_remaining_days():
     assert f"<code>{ZONES.easy}</code>" in text and "⏱ ≈" in text
     assert "&lt;перед&gt;" in text                              # текст модели экранирован
     assert_balanced(text)
+
+
+def test_macro_goal_line_and_current_form_note():
+    text = render_macro(make_macro(), "21.1 км", None, ZONES, goal_line="⏱ Цель: <b>1:45:00</b>")
+    assert "⏱ Цель: <b>1:45:00</b>" in text
+    assert "по текущей форме" in text
+    assert "по текущей форме" not in render_macro(make_macro(), "21.1 км", None, ZONES)
+
+
+# ---------- render_plan_overview (/show_plan) ----------
+
+def overview(**overrides):
+    params = dict(
+        target_race="21.1 км (Полумарафон)", race_date=date(2027, 1, 3), today=date(2026, 11, 4),
+        total_weeks=12, week_number=4, start_monday=date(2026, 10, 12), macro=make_macro(),
+    )
+    params.update(overrides)
+    return render_plan_overview(**params)
+
+
+def test_overview_current_week_and_phase():
+    text = overview()
+    assert "План: 21.1 км (Полумарафон)" in text
+    assert "03.01.2027" in text and "через 60 дн." in text
+    assert "неделя 4 из 12" in text
+    assert "Фаза 2 · Раннее качество" in text         # недели 4–7
+    assert "Плановый объём недели: 36 км" in text
+    assert "Цель по времени не задана" in text
+
+
+def test_overview_goal_and_forecast_lines():
+    text = overview(goal_line="⏱ Цель: <b>1:45:00</b>", forecast_line="Прогноз: 1:50:00")
+    assert "⏱ Цель: <b>1:45:00</b>" in text and "Прогноз" not in text
+    assert "Прогноз: 1:50:00" in overview(forecast_line="Прогноз: 1:50:00")
+
+
+def test_overview_before_start_and_after_race():
+    assert "начнётся в понедельник 12.10" in overview(today=date(2026, 10, 8), week_number=None)
+    finished = overview(today=date(2027, 1, 5), week_number=None)
+    assert "План завершён" in finished and "прошёл" in finished
+
+
+def test_overview_legacy_plan_and_escaping():
+    text = overview(macro=None, target_race="<b>x</b>")
+    assert "старом формате" in text and "&lt;b&gt;x&lt;/b&gt;" in text

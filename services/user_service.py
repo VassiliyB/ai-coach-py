@@ -65,13 +65,19 @@ class UserService:
     @staticmethod
     async def save_training_plan(
         session: AsyncSession, user_id: int, target_race: str,
-        race_date: date, total_weeks: int, plan: MacroPlan,
+        race_date: date, total_weeks: int, plan: MacroPlan, target_time_s: Optional[int] = None,
     ) -> TrainingPlan:
         saved = await PlanRepository(session).create_active(
-            user_id, target_race, race_date, total_weeks, plan_to_details(plan)
+            user_id, target_race, race_date, total_weeks, plan_to_details(plan), target_time_s=target_time_s,
         )
         await session.commit()
         return saved
+
+    @staticmethod
+    async def set_plan_target_time(session: AsyncSession, plan_id: int, target_time_s: Optional[int]) -> None:
+        """target_time_s уже проверен services.race_goal; None убирает цель."""
+        await PlanRepository(session).set_target_time(plan_id, target_time_s)
+        await session.commit()
 
     @staticmethod
     async def get_active_plan(session: AsyncSession, user_id: int) -> Optional[TrainingPlan]:
