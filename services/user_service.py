@@ -9,7 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from clients.llm_usage import UsageRecord, UsageScope
 from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
 from models.user import ACCESS_APPROVED, ACCESS_PENDING
-from repositories import ActivityRepository, PlanRepository, UsageRepository, UsageTotals, UserRepository
+from repositories import (
+    ActivityRepository,
+    MessageRepository,
+    PlanRepository,
+    UsageRepository,
+    UsageTotals,
+    UserRepository,
+)
 from schemas.plan import MacroPlan, WeekPlan
 from services.plan_storage import plan_to_details
 from services.user_time import to_tzinfo
@@ -104,6 +111,22 @@ class UserService:
     @staticmethod
     async def usage_totals_since(session: AsyncSession, since: datetime) -> Dict[int, UsageTotals]:
         return await UsageRepository(session).totals_by_chat(since)
+
+    @staticmethod
+    async def recent_messages(
+        session: AsyncSession, user_id: int, since: datetime, limit: int,
+    ) -> List[Tuple[str, str]]:
+        return await MessageRepository(session).recent(user_id, since, limit)
+
+    @staticmethod
+    async def save_ask_exchange(
+        session: AsyncSession, user_id: int, question: str, answer: str, keep_since: datetime,
+    ) -> None:
+        """Вопрос /ask и ответ тренера; заодно удаляет историю пользователя старше keep_since."""
+        repo = MessageRepository(session)
+        await repo.delete_older(user_id, keep_since)
+        await repo.add_exchange(user_id, question, answer)
+        await session.commit()
 
     @staticmethod
     async def set_garmin_linked(session: AsyncSession, chat_id: int, linked: bool = True) -> None:

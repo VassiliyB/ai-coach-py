@@ -1,7 +1,9 @@
 # bot/handlers/ask.py
 """/ask: вопрос тренеру. Ответ опирается на фрагменты книг (полнотекстовый поиск), профиль и текущий план."""
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
@@ -15,13 +17,20 @@ from repositories.book_repo import BookRepository
 from services.ai_coach_service import AICoachService
 from services.coach_qa import (
     ASK_COMMAND,
+    HISTORY_EXCHANGES,
+    HISTORY_KEEP,
+    HISTORY_WINDOW,
     MAX_QUESTION_CHARS,
     SEARCH_LIMIT,
+    Exchange,
     Fragment,
     ask_limit_text,
     cited_numbers,
     expand_terms,
     format_fragments,
+    format_history,
+    history_questions,
+    pair_exchanges,
     plan_context,
     questions_left_note,
     render_sources,
@@ -45,8 +54,17 @@ ASK_PROMPT = (
 )
 
 
-async def _load_context(chat_id: int) -> Tuple[Dict[str, Any], Optional[str]]:
-    """Профиль (текст паспорта и зоны) и текущий план одним чтением; сессия закрывается до вызова модели."""
+@dataclass(frozen=True)
+class AskContext:
+    user_id: int
+    profile: Dict[str, Any]
+    plan_text: Optional[str]
+    history: List[Exchange]       # прошлые вопросы и ответы за HISTORY_WINDOW
+
+
+async def _load_context(chat_id: int) -> AskContext:
+    """Профиль (текст паспорта и зоны), текущий план и история разговора одним чтением;
+    сессия закрывается до вызова модели."""
     async with async_session_maker() as session:
         user = await UserService.get_or_create_user(session, chat_id)
         profile = await UserService.get_athlete_profile(session, user.id)
@@ -55,6 +73,9 @@ async def _load_context(chat_id: int) -> Tuple[Dict[str, Any], Optional[str]]:
         weekly = None
         if plan is not None:
             weekly = await UserService.get_weekly_plan_by_start(session, plan.id, monday_of(today))
+        messages = await UserService.recent_messages(
+            session, user.id, datetime.now(timezone.utc) - HISTORY_WINDOW, HISTORY_EXCHANGES * 2,
+        )
 
     plan_text = None
     if plan is not None:
@@ -67,7 +88,18 @@ async def _load_context(chat_id: int) -> Tuple[Dict[str, Any], Optional[str]]:
             macro=parse_macro(plan.plan_details),
             week=parse_week(weekly.plan_details) if weekly is not None else None,
         )
-    return build_profile_context(profile), plan_text
+    return AskContext(user.id, build_profile_context(profile), plan_text, pair_exchanges(messages))
+
+
+async def _remember(user_id: int, question: str, answer: str) -> None:
+    """Вопрос и ответ в историю для уточнений. Сбой не мешает: ответ пользователь уже получил."""
+    try:
+        async with async_session_maker() as session:
+            await UserService.save_ask_exchange(
+                session, user_id, question, answer, datetime.now(timezone.utc) - HISTORY_KEEP,
+            )
+    except Exception as exc:
+        logger.warning("История /ask не сохранена (user_id=%s): %s", user_id, exc)
 
 
 async def _find_fragments(groups: List[List[str]]) -> List[Fragment]:
@@ -101,13 +133,18 @@ async def _answer(message: Message, question: str, ai_coach: AICoachService) -> 
 
     status_msg = await message.answer("🔎 Ищу ответ в книгах...")
     try:
-        profile_ctx, plan_text = await _load_context(message.chat.id)
-        terms = await ai_coach.search_terms(question)
+        ctx = await _load_context(message.chat.id)
+        terms = await ai_coach.search_terms(question, history_questions(ctx.history))
         fragments = await _find_fragments(expand_terms(terms))
-        logger.info("/ask: слова поиска %s, найдено фрагментов %d", terms, len(fragments))
+        logger.info(
+            "/ask: слова поиска %s, найдено фрагментов %d, вопросов в истории %d",
+            terms, len(fragments), len(ctx.history),
+        )
 
         await status_msg.edit_text("🧠 Готовлю ответ...")
-        answer = await ai_coach.answer_question(question, profile_ctx, plan_text, format_fragments(fragments))
+        answer = await ai_coach.answer_question(
+            question, ctx.profile, ctx.plan_text, format_fragments(fragments), format_history(ctx.history),
+        )
         sources = render_sources(fragments, cited_numbers(answer, len(fragments)))
 
         await status_msg.delete()
@@ -119,9 +156,12 @@ async def _answer(message: Message, question: str, ai_coach: AICoachService) -> 
             await message.answer(chunk, parse_mode="HTML")
     except AIClientError as exc:
         await status_msg.edit_text(f"❌ {exc}")
+        return
     except Exception as exc:
         logger.exception("Ошибка при ответе на вопрос: %s", exc)
         await status_msg.edit_text("❌ Не удалось ответить на вопрос. Попробуйте позже.")
+        return
+    await _remember(ctx.user_id, question, answer)
 
 
 @router.message(Command("ask"), flags={"user_lock": "/ask", "llm": "/ask"})

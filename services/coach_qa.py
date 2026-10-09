@@ -7,8 +7,8 @@
 import html
 import re
 from dataclasses import dataclass
-from datetime import date
-from typing import Iterable, List, Optional, Sequence
+from datetime import date, timedelta
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,56 @@ LEFT_NOTE_FROM = 2     # предупреждать, когда вопросов
 
 def ask_limit_text() -> str:
     return "⏳ Вопросы тренеру на сегодня закончились. Новые можно задать после полуночи."
+
+
+@dataclass(frozen=True)
+class Exchange:
+    """Прошлый вопрос и ответ тренера из chat_messages: контекст для уточняющих вопросов."""
+    question: str
+    answer: str
+
+
+# История: последние обмены за окно; дальше вопрос считается новым разговором
+HISTORY_EXCHANGES = 2
+HISTORY_WINDOW = timedelta(hours=1)
+HISTORY_ANSWER_CHARS = 1200      # ответ в истории сокращается: нужен смысл, а не текст целиком
+HISTORY_KEEP = timedelta(days=7)  # старше удаляется при записи нового вопроса
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def pair_exchanges(messages: Sequence[Tuple[str, str]], limit: int = HISTORY_EXCHANGES) -> List[Exchange]:
+    """(role, content) от старых к новым -> последние limit пар «вопрос, ответ». Вопрос без ответа пропускается."""
+    exchanges: List[Exchange] = []
+    question: Optional[str] = None
+    for role, content in messages:
+        if role == "user":
+            question = content
+        elif role == "assistant" and question is not None:
+            exchanges.append(Exchange(question, content))
+            question = None
+    return exchanges[-limit:] if limit > 0 else []
+
+
+def _plain(text: str) -> str:
+    """Ответ тренера в Telegram HTML -> обычный текст для промпта."""
+    return " ".join(html.unescape(_TAG_RE.sub(" ", text)).split())
+
+
+def format_history(exchanges: Sequence[Exchange]) -> str:
+    """Прошлые вопросы и сокращённые ответы для промпта ответа (без <, >: текст пойдёт в <data>)."""
+    blocks = []
+    for n, ex in enumerate(exchanges, 1):
+        answer = _plain(ex.answer)
+        if len(answer) > HISTORY_ANSWER_CHARS:
+            answer = answer[:HISTORY_ANSWER_CHARS].rsplit(" ", 1)[0] + "…"
+        question = " ".join(ex.question.split())
+        blocks.append(f"Вопрос {n}: {question}\nОтвет {n}: {answer}".replace("<", " ").replace(">", " "))
+    return "\n\n".join(blocks)
+
+
+def history_questions(exchanges: Sequence[Exchange]) -> str:
+    """Только прошлые вопросы: шагу поиска нужна тема разговора, ответы ему лишние."""
+    return "\n".join(" ".join(ex.question.split()) for ex in exchanges).replace("<", " ").replace(">", " ")
 
 
 def questions_left_note(left: int) -> Optional[str]:

@@ -1,10 +1,12 @@
 # services/scheduler_service.py
 import logging
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -40,12 +42,15 @@ from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now,
 from services.vdot_review import RECENT_WEEKS, longest_gap_days, review_due, review_vdot
 from services.week_adaptation import (
     RecoverySignals,
+    RunFact,
     WeekAdjustment,
+    WeekReview,
     adjust_next_week,
     review_to_dict,
     review_week,
     run_facts,
 )
+from services.week_summary import has_content, render_week_summary, summarize_week
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +117,9 @@ class TrainingSchedulerService:
         await self._review_vdot(user, plan, profile, week_number, today)  # обновляет profile.vdot
         zones = zones_for_profile(profile)
         hr_basis = profile_hr_basis(profile)
-        adjustment, macro = await self._adapt_week(user, plan, macro, week_number, today, zones, hr_basis)
+        adjustment, macro, summary_sent = await self._adapt_week(
+            user, plan, macro, week_number, today, zones, hr_basis,
+        )
         logger.info(
             "Генерация недели для user_id=%s (chat_id=%s): №%d из %d (%s - %s)",
             user.id, user.telegram_chat_id, week_number, macro.total_weeks, week_start, week_end,
@@ -152,7 +159,8 @@ class TrainingSchedulerService:
             phase=macro.phase_for_week(week_number),
             zones=zones,
             hr_basis=hr_basis,
-            adjustment=adjustment,
+            # Итог недели уже пришёл отдельным сообщением: строку «Прошлая неделя» не повторяем
+            adjustment=replace(adjustment, summary=None) if adjustment and summary_sent else adjustment,
         )
         # Кнопка выгрузки в календарь Garmin под последней частью расписания
         chunks = MessageService.chunk_message(text)
@@ -210,16 +218,17 @@ class TrainingSchedulerService:
         today: date,
         zones: Optional[TrainingZones],
         hr_basis: HrRef,
-    ) -> Tuple[Optional[WeekAdjustment], MacroPlan]:
+    ) -> Tuple[Optional[WeekAdjustment], MacroPlan, bool]:
         """Адаптация по факту: поправка следующей недели (уровень 1) и пересчёт макроплана по событиям (уровень 3).
 
-        Сравнивает план текущей недели в БД с пробежками Garmin, сохраняет факт недели, при перерыве или
-        двух слабых неделях подряд пересчитывает оставшийся километраж и сообщает об этом.
-        Возвращает (поправка или None без данных Garmin, актуальный макроплан). Сбой рассылку не останавливает.
+        Сравнивает план текущей недели в БД с пробежками Garmin, отправляет итог недели, сохраняет факт,
+        при перерыве или двух слабых неделях подряд пересчитывает оставшийся километраж и сообщает об этом.
+        Возвращает (поправка или None без данных Garmin, актуальный макроплан, отправлен ли итог недели).
+        Сбой рассылку не останавливает.
         """
         chat_id = user.telegram_chat_id
         if self.garmin is None or not user.garmin_linked or not self.garmin.has_saved_tokens(chat_id):
-            return None, macro
+            return None, macro, False
         current_monday = monday_of(today)
         window_start = today - timedelta(days=REPLAN_WINDOW_DAYS - 1)
         try:
@@ -232,16 +241,17 @@ class TrainingSchedulerService:
             planned = parse_week(weekly.plan_details) if weekly else None
         except GarminClientError as exc:
             logger.warning("Факт недели из Garmin не получен (chat_id=%s): %s", chat_id, exc)
-            return None, macro
+            return None, macro, False
         except Exception:
             logger.exception("Ошибка подготовки корректировки недели (chat_id=%s)", chat_id)
-            return None, macro
+            return None, macro, False
 
         runs = run_facts(facts["runs"])
         review = review_week(planned, current_monday, runs, today, zones, hr_basis) if planned else None
         if weekly is not None and review is not None and review.compliance is not None:
             async with async_session_maker() as session:
                 await UserService.set_week_review(session, weekly.id, review_to_dict(review))
+        summary_sent = await self._send_week_summary(chat_id, current_monday, runs, today, review, zones, hr_basis)
 
         adjustment = adjust_next_week(
             target_km_for_week(macro, week_number), review,
@@ -268,7 +278,22 @@ class TrainingSchedulerService:
                 await self.bot.send_message(chat_id=chat_id, text=render_replan(replan), parse_mode="HTML")
                 macro = replan.macro
                 adjustment = adjustment_after_replan(adjustment, replan, gap)
-        return adjustment, macro
+        return adjustment, macro, summary_sent
+
+    async def _send_week_summary(
+        self, chat_id: int, week_start: date, runs: List[RunFact], today: date,
+        review: Optional[WeekReview], zones: Optional[TrainingZones], hr_basis: HrRef,
+    ) -> bool:
+        """Итог уходящей недели отдельным сообщением перед новой неделей. Сбой отправки рассылку не останавливает."""
+        summary = summarize_week(week_start, runs, today, review, zones, hr_basis)
+        if not has_content(summary):
+            return False
+        try:
+            await self.bot.send_message(chat_id=chat_id, text=render_week_summary(summary), parse_mode="HTML")
+        except TelegramAPIError as exc:
+            logger.warning("Итог недели не отправлен (chat_id=%s): %s", chat_id, exc)
+            return False
+        return True
 
     async def weekly_distribution_tick(self, now_utc: Optional[datetime] = None) -> int:
         """Ежечасная проверка: отправляет неделю тем, у кого по их поясу воскресенье и уже 15:00.
