@@ -22,8 +22,9 @@ config.py                   Settings (pydantic-settings), секреты как 
 database.py                 async engine, async_session_maker, run_migrations (alembic upgrade head)
 sports_knowledge.txt        база знаний (Дэниелс + 80/20), идёт в системный промпт
 generate_token.py           ручной вход в Garmin (обход 429), токены в .garmin_tokens/<chat_id>/
-models/                     SQLAlchemy-модели (6 таблиц), base.py с naming convention и utcnow()
-repositories/               доступ к БД: user_repo, plan_repo, activity_repo (flush, без commit)
+ingest_books.py             загрузка книг EPUB в book_chunks (--dry-run: только разбор, --list: что загружено)
+models/                     SQLAlchemy-модели (7 таблиц), base.py с naming convention и utcnow()
+repositories/               доступ к БД: user_repo, plan_repo, activity_repo, book_repo (flush, без commit)
 schemas/plan.py             pydantic-схемы: WorkoutType, PlannedDay, WeekPlan, Phase, MacroPlan, PHASE_NAMES
 clients/llm.py              create_llm_client(): клиент по LLM_PROVIDER
 clients/claude_client.py    Claude: system отдельно, структурированный вывод по схеме, effort вместо temperature
@@ -44,6 +45,7 @@ services/plan_calendar.py   границы недель, число недель
 services/user_time.py       часовой пояс пользователя: разбор ввода, смещение по Garmin, время рассылки
 services/user_locks.py      одна тяжёлая операция на пользователя (реестр в памяти процесса)
 services/plan_storage.py    plan_details (JSONB) <-> MacroPlan / WeekPlan
+services/book_ingest.py     EPUB -> главы -> фрагменты для поиска (только стандартная библиотека)
 services/plan_renderer.py   сообщения Telegram (HTML) из WeekPlan и MacroPlan
 services/ai_coach_service.py текстовый разбор тренировки для /analyze (зоны считает activity_zones)
 services/activity_zones.py зона тренировки по темпу и пульсу, % ЧССmax, серая зона, пульс выше зоны темпа
@@ -185,6 +187,13 @@ docker compose down                                   # остановить (д
 - `send_week` блокировку не берёт: её держит вызывающий (middleware для `/test_week`, рассылка для себя).
 - Реестр в памяти процесса: при запуске нескольких процессов бота блокировки нужно перенести в БД (advisory locks) или Redis.
 
+**Книги для `/ask` (`services/book_ingest`, `book_chunks`, миграция `1b7e5c9d3a2f`)**
+- Файлы книг лежат вне репозитория (у автора `F:\books\running`), текст хранится только в БД. Загрузка: `python ingest_books.py <папка>` (только `*.epub` из корня папки; PDF в подпапке `tables` нужны для каталога тренировок, в поиск не идут). Повторная загрузка заменяет фрагменты книги целиком, ключ это имя файла без расширения. В Docker: `docker compose run --rm -v <папка>:/books:ro bot python ingest_books.py /books`.
+- Разбор: порядок из spine `.opf`, глава = номер-заголовок + название («Глава 5. Система тренировок VDOT»), разделы по h2–h6. Пропускаются служебные страницы (`SKIP_TITLES`) и файлы короче `MIN_DOC_WORDS`, сноски, подписи «Таблица…»/«Рис.…» (таблицы в EPUB картинками). HTML-таблицы идут строками «a | b», абзацы в ячейке через «; ». Фрагмент ~300 слов, не длиннее 450, по границам абзацев и разделов; короткий раздел дописывается к предыдущему фрагменту с заголовком.
+- Поиск полнотекстовый (словарь `russian`, без pgvector): `search_vector` это генерируемая колонка (заголовок раздела вес A, текст B, ё -> е) с GIN-индексом; выражение продублировано в миграции. `BookRepository.search(terms)`: слова через OR, порядок по числу совпавших слов запроса, затем `ts_rank_cd`.
+- Обозначения в переводах разные: у Дэниелса Л/М/П/И/Пв (E/M/T/I/R), Д-бег (длительный), К1/К2 (качественные); у Фицджеральда зоны 1–5, «длинная пробежка», в «Бегай как профи» Т5К/Т10К/ПМТ/КС/МАС. Слова запроса подбирать с синонимами из обоих переводов, иначе поиск промахивается.
+- `book_chunks` без FK на `app_users`: это не данные пользователя, `/delete_me` их не касается.
+
 **Удаление данных (`/delete_me`)**
 - Двухшаговое: предупреждение со списком удаляемого, само удаление только по кнопке подтверждения.
 - Удаляется строка `app_users`, остальное (профиль, планы, недели, активности, сообщения) удаляет `ON DELETE CASCADE` в БД. Новую таблицу с данными пользователя заводить с FK на `app_users` и `ondelete="CASCADE"`, иначе `/delete_me` её не очистит.
@@ -237,6 +246,8 @@ docker compose down                                   # остановить (д
   - уровень 2: пересмотр VDOT раз в 4 недели (расчёт проверен на живых пробежках пользователя), `/sync` не обходит пересмотр;
   - уровень 3: пересчёт оставшихся недель макроплана по событиям.
   Миграции `b5d3e8f1a2c4`, `c7e4a9b2d1f6`, `d2f6b8c3e5a7` проверены на локальной БД.
+
+- Этап 9 (начат): база книг для `/ask`. Сделано: таблица `book_chunks` (миграция `1b7e5c9d3a2f` проверена на локальной БД, включая откат), `ingest_books.py`, загружены три книги (Дэниелс «От 800 метров до марафона», Фицджеральд «Бег по правилу 80/20» и «Бегай как профи», ~750 фрагментов), поиск проверен на примерах вопросов. Дальше: команда `/ask` (переформулировка вопроса в слова поиска с синонимами, ответ со ссылками на главы), каталог тренировок из планов книг, расширенная `sports_knowledge.txt`.
 
 ## Известные ограничения
 
