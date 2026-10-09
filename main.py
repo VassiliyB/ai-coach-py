@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from bot.handlers import analyze, garmin_export, plan, show_plan, start, sync
+from bot.handlers import analyze, ask, garmin_export, plan, show_plan, start, sync
 from bot.handlers import settings as settings_handlers
 from bot.middlewares import UserLockMiddleware
 from clients.garmin import GarminClient
@@ -68,6 +68,7 @@ async def main() -> None:
     dp.include_router(start.router)
     dp.include_router(sync.router)
     dp.include_router(analyze.router)
+    dp.include_router(ask.router)
     dp.include_router(garmin_export.router)
     dp.include_router(settings_handlers.router)  # до plan: его хендлер состояния ловит любой текст
     dp.include_router(show_plan.router)

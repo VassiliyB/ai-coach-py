@@ -58,6 +58,7 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
             "• <code>/plan</code> — составить макроплан к забегу\n"
             "• <code>/show_plan</code> — текущий план, неделя и цель на забег\n"
             "• <code>/analyze</code> — разобрать последнюю пробежку\n"
+            "• <code>/ask</code> — вопрос тренеру (ответ по книгам Дэниелса и Фицджеральда)\n"
             "• <code>/timezone</code> — часовой пояс для расписаний\n"
             "• <code>/delete_me</code> — удалить все свои данные",
             reply_markup=ReplyKeyboardRemove(),   # убирает кнопку входа, оставшуюся с момента подключения

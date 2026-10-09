@@ -16,3 +16,8 @@ class ShowPlanStates(StatesGroup):
 class AuthStates(StatesGroup):
     """FSM-состояние ожидания 2FA/MFA кода от Garmin."""
     waiting_for_mfa = State()
+
+
+class AskStates(StatesGroup):
+    """/ask без текста: ждём вопрос тренеру следующим сообщением."""
+    waiting_for_question = State()
