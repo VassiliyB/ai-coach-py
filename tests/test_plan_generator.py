@@ -52,7 +52,9 @@ def good_week_data():
     return {
         "days": [
             {"day": 1, "type": "rest"},
-            {"day": 2, "type": "threshold", "distance_km": 8, "quality_km": 3},
+            # 5-я неделя (фаза II, 38 км ± 15%): без VDOT из каталога доступны повторы по дистанции;
+            # лимит R 5% недели пускает ровно 4 × 400 м
+            {"day": 2, "type": "repetition", "distance_km": 8, "workout_id": "R-400", "reps": 4},
             {"day": 3, "type": "easy", "distance_km": 5},
             {"day": 4, "type": "easy", "distance_km": 6},
             {"day": 5, "type": "rest"},

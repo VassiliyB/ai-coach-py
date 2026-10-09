@@ -43,6 +43,10 @@ class PlannedDay(BaseModel):
     distance_km: Optional[float] = Field(default=None, ge=0, le=60)   # общая дистанция, с разминкой
     quality_km: Optional[float] = Field(default=None, ge=0, le=30)    # только "рабочая" часть качественной
     description: str = Field(default="", max_length=300)              # например "5 × 1000 м, отдых 2 мин"
+    # Тренировка из каталога (services.workout_catalog) и число повторов: по ним код заполняет quality_km
+    # и description. В старых планах их нет, там рабочую часть и описание задавала модель
+    workout_id: Optional[str] = Field(default=None, max_length=40)
+    reps: Optional[int] = Field(default=None, ge=1, le=40)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "PlannedDay":
@@ -53,9 +57,9 @@ class PlannedDay(BaseModel):
             raise ValueError(f"для '{self.type.value}' distance_km должна быть пустой")
 
         if self.type in QUALITY_TYPES:
-            if not self.quality_km:
-                raise ValueError(f"для '{self.type.value}' нужна quality_km > 0 (рабочая часть)")
-            if self.quality_km > (self.distance_km or 0):
+            if not self.quality_km and not self.workout_id:
+                raise ValueError(f"для '{self.type.value}' нужен workout_id из каталога")
+            if self.quality_km and self.quality_km > (self.distance_km or 0):
                 raise ValueError("quality_km не может быть больше distance_km")
         elif self.quality_km:
             raise ValueError("quality_km указывается только для качественных тренировок")

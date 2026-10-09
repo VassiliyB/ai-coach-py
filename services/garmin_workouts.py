@@ -2,7 +2,8 @@
 """Тренировки для календаря Garmin из дней плана. Чистые функции, без I/O.
 
 Структуру тренировки (разминка, рабочая часть, повторы, заминка), целевой темп и пульс считает код.
-Повторы берутся из описания дня ("5 × 1000 м, отдых 2 мин"), только если их объём сходится с quality_km;
+Тренировка из каталога (workout_id) строится по шаблону services.workout_catalog. В старых планах повторы
+берутся из описания дня ("5 × 1000 м, отдых 2 мин"), только если их объём сходится с quality_km;
 иначе рабочая часть выгружается одним отрезком.
 """
 import re
@@ -18,9 +19,11 @@ from garminconnect.workout import (
     WorkoutSegment,
     create_cooldown_step,
     create_distance_interval_step,
+    create_interval_step,
     create_recovery_step,
     create_repeat_group,
     create_targeted_distance_interval_step,
+    create_targeted_interval_step,
     create_warmup_step,
 )
 
@@ -28,6 +31,7 @@ from schemas.plan import RUNNING_TYPES, PlannedDay, WeekPlan
 from services.coach_service import PaceRange, TrainingZones
 from services.plan_paces import estimate_duration_min, hr_range_for_zone, pace_for_zone
 from services.plan_renderer import TYPE_LABELS
+from services.workout_catalog import Repeat, Step, workout_steps
 
 WORKOUT_PREFIX = "AI Coach"
 NAME_MAX_LEN = 80
@@ -129,8 +133,47 @@ def _as_distance(step: Any, km: float) -> Any:
     return step
 
 
+def _time_step(seconds: float, order: int, zone: Optional[str], zones, max_hr) -> Any:
+    target = step_target(zone, zones, max_hr)
+    if target is None:
+        return create_interval_step(float(seconds), order)
+    return create_targeted_interval_step(float(seconds), order, target)
+
+
+def _catalog_step(step: Step, order: int, zones, max_hr) -> Any:
+    """Шаг каталога -> шаг библиотеки. Разминка, заминка и восстановление без цели, работа с целью зоны."""
+    if step.kind == "work":
+        zone = step.zone if step.target else None   # в гору цель по темпу бессмысленна
+        if step.distance_m:
+            return _distance_step(step.distance_m / 1000, order, zone, zones, max_hr)
+        return _time_step(step.duration_s, order, zone, zones, max_hr)
+    factory = {"warmup": create_warmup_step, "cooldown": create_cooldown_step,
+               "recovery": create_recovery_step}[step.kind]
+    if step.distance_m:
+        return _as_distance(factory(0, order), step.distance_m / 1000)
+    return factory(float(step.duration_s), order)
+
+
+def _catalog_steps(specs: List[object], zones, max_hr) -> List[Any]:
+    steps: List[Any] = []
+    order = 1
+    for spec in specs:
+        if isinstance(spec, Repeat):
+            children = [_catalog_step(child, order + 1 + i, zones, max_hr) for i, child in enumerate(spec.steps)]
+            steps.append(create_repeat_group(spec.iterations, children, order))
+            order += 1 + len(children)
+        else:
+            steps.append(_catalog_step(spec, order, zones, max_hr))
+            order += 1
+    return steps
+
+
 def build_steps(day: PlannedDay, zones: Optional[TrainingZones], max_hr: Optional[int]) -> List[Any]:
-    """Шаги тренировки. Лёгкий и длительный бег одним отрезком в зоне E, качественная с разминкой и заминкой."""
+    """Шаги тренировки. Лёгкий и длительный бег одним отрезком в зоне E, качественная с разминкой и заминкой.
+    Тренировка из каталога строится по своему шаблону, старые дни без workout_id разбираются по описанию."""
+    specs = workout_steps(day, zones)
+    if specs:
+        return _catalog_steps(specs, zones, max_hr)
     distance = day.distance_km or 0.0
     if not day.quality_km:
         return [_distance_step(distance, 1, day.zone, zones, max_hr)]

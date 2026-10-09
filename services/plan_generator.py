@@ -9,11 +9,13 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from clients.ai_errors import AIResponseFormatError
-from schemas.plan import PHASE_NAMES, MacroPlan, WeekPlan, WorkoutType
+from schemas.plan import PHASE_NAMES, MacroPlan, WeekPlan
 from services import plan_validator as rules
 from services.coach_service import TrainingZones
 from services.plan_validator import format_problems, validate_intro_days, validate_macro, validate_week
+from services.race_goal import race_distance_m
 from services.week_adaptation import WeekAdjustment
+from services.workout_catalog import available, catalog_prompt, resolve_week
 
 logger = logging.getLogger(__name__)
 
@@ -139,14 +141,9 @@ def _phase_rule(phase_number: int) -> str:
         return ""
     types = ", ".join(sorted(t.value for t in forbidden))
     return (
-        f"\n9. В фазе {phase_number} запрещены тренировки типов: {types}. "
+        f"\n8. В фазе {phase_number} запрещены тренировки типов: {types}. "
         "Используй только rest, easy, long, cross; ускорения по 15-20 с можно добавить в description лёгкого бега."
     )
-
-
-def _limit_line(workout_type: WorkoutType) -> str:
-    share, cap = rules.QUALITY_LIMITS[workout_type]
-    return f"  • {workout_type.value}: quality_km не более {share:.0%} недельного километража и не более {cap:g} км"
 
 
 # ---------------- Примеры формата ----------------
@@ -169,8 +166,7 @@ WEEK_EXAMPLE = json.dumps(
     {
         "days": [
             {"day": 1, "type": "rest", "description": "Отдых"},
-            {"day": 2, "type": "threshold", "distance_km": 8, "quality_km": 3,
-             "description": "Разминка 2.5 км, 3 км непрерывно в пороговой зоне, заминка 2.5 км"},
+            {"day": 2, "type": "threshold", "distance_km": 8, "workout_id": "T-cruise-1600", "reps": 3},
             {"day": 3, "type": "easy", "distance_km": 5, "description": "Лёгкий кросс"},
             {"day": 4, "type": "easy", "distance_km": 6, "description": "Лёгкий кросс + 4 ускорения по 20 с"},
             {"day": 5, "type": "rest", "description": "Отдых"},
@@ -260,6 +256,25 @@ class PlanGenerator:
             if zones is not None else ""
         )
         target = adjustment.target_km if adjustment else target_km_for_week(macro, week_number)
+        options = available(phase.number, target, zones, race_distance_m(race))
+        if options:
+            catalog = (
+                "КАТАЛОГ КАЧЕСТВЕННЫХ ТРЕНИРОВОК (из книг Дэниелса и Фицджеральда; повторы уже ограничены "
+                "лимитами рабочей части для этой недели):\n"
+                f"{catalog_prompt(options, phase.number)}\n\n"
+            )
+            quality_rule = (
+                "3. Для качественных дней (marathon, threshold, interval, repetition) выбери тренировку из каталога: "
+                "workout_id и reps в указанных пределах; type должен совпадать с типом тренировки в каталоге. "
+                "quality_km и description для них не указывай: их рассчитает система. distance_km — вся "
+                "пробежка с разминкой и заминкой.\n"
+            )
+        else:
+            catalog = ""
+            quality_rule = (
+                "3. Качественных тренировок на этой неделе нет: только rest, easy, long, cross; "
+                "workout_id не указывай.\n"
+            )
         return (
             f"Составь недельный микроцикл: неделя подготовки №{int(week_number)} из {macro.total_weeks} "
             f"({_clean(week_start, 20)} — {_clean(week_end, 20)}). Цель: {_clean(race)}.\n"
@@ -267,6 +282,7 @@ class PlanGenerator:
             f"Плановый километраж недели: {target:g} км (допуск ±{rules.TARGET_KM_TOLERANCE:.0%}).\n"
             f"{_adjustment_block(adjustment)}\n"
             f"АТЛЕТ:\n<data>\n{_profile_block(profile)}\n</data>\n\n"
+            f"{catalog}"
             "Верни JSON такой структуры (пример формата, значения подбери сам):\n"
             f"{WEEK_EXAMPLE}\n\n"
             "Допустимые type: rest, easy, long, marathon, threshold, interval, repetition, cross.\n"
@@ -274,19 +290,14 @@ class PlanGenerator:
             "1. days содержит ровно 7 элементов, day от 1 (Пн) до 7 (Вс).\n"
             "2. distance_km — общая дистанция, включая разминку и заминку. Для rest и cross её не указывай. "
             "Сумма distance_km за неделю близка к плановому километражу.\n"
-            "3. quality_km — только рабочая часть для marathon, threshold, interval, repetition; "
-            "она не больше distance_km. Для остальных типов не указывай.\n"
-            "4. Лимиты рабочей части:\n"
-            f"{_limit_line(WorkoutType.THRESHOLD)}\n"
-            f"{_limit_line(WorkoutType.INTERVAL)}\n"
-            f"{_limit_line(WorkoutType.REPETITION)}\n"
-            f"5. Длительный бег (long): не более {rules.LONG_MAX_SHARE:.0%} недельного километража{long_limit}; "
+            f"{quality_rule}"
+            f"4. Длительный бег (long): не более {rules.LONG_MAX_SHARE:.0%} недельного километража{long_limit}; "
             "он не короче любой другой тренировки недели.\n"
-            f"6. Не более {rules.MAX_QUALITY_SESSIONS} качественных тренировок; минимум {rules.MIN_REST_DAYS} день "
+            f"5. Не более {rules.MAX_QUALITY_SESSIONS} качественных тренировок; минимум {rules.MIN_REST_DAYS} день "
             "отдыха (rest) или ОФП (cross).\n"
-            "7. Две тяжёлые тренировки подряд (качественная или long) недопустимы: после них лёгкий день или отдых.\n"
-            "8. description — структура тренировки (например, '5 × 1 км, отдых 2 мин трусцой'), без темпов "
-            "и без длительности в минутах: их рассчитает система."
+            "6. Две тяжёлые тренировки подряд (качественная или long) недопустимы: после них лёгкий день или отдых.\n"
+            "7. description лёгких дней — коротко, без темпов и длительности в минутах (их рассчитает система); "
+            "ускорения по 15-20 с можно добавить в description лёгкого бега."
             f"{_phase_rule(phase.number)}"
         )
 
@@ -375,6 +386,7 @@ class PlanGenerator:
         target = adjustment.target_km if adjustment else target_km_for_week(macro, week_number)
         max_quality = adjustment.max_quality if adjustment else None
         phase_number = macro.phase_for_week(week_number).number
+        options = {t.id: reps for t, reps in available(phase_number, target, zones, race_distance_m(target_race))}
         prompt = self._week_prompt(
             athlete_profile, target_race, macro, week_number, week_start, week_end, zones, adjustment,
         )
@@ -384,7 +396,9 @@ class PlanGenerator:
         ]
         return await self._generate(
             messages, WeekPlan,
-            lambda w: validate_week(
+            # сначала каталог (заполняет quality_km и описание качественных дней), потом правила недели;
+            # замечания обоих видов сразу, чтобы модель исправила всё за одну попытку
+            lambda w: resolve_week(w, options, zones) + validate_week(
                 w, target_km=target, phase_number=phase_number, zones=zones, max_quality=max_quality,
             ),
             temperature=0.4, what="недельный план",

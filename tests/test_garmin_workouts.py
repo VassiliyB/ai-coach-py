@@ -131,6 +131,32 @@ def test_intervals_become_repeat_group_and_distance_fits():
     assert len(set(orders)) == len(orders)
 
 
+def test_catalog_day_built_from_template():
+    # описание дня не разбирается: структура из каталога (5 × 3 мин И по времени, 2 мин трусцой)
+    day = PlannedDay(day=4, type="interval", distance_km=10, quality_km=3.5, workout_id="I-3min", reps=5,
+                     description="что угодно")
+    warm, group, cool = steps(build_workout(day, ZONES, MAX_HR))
+    assert warm["stepType"]["stepTypeKey"] == "warmup" and cool["stepType"]["stepTypeKey"] == "cooldown"
+    assert group["numberOfIterations"] == 5
+    rep, rest = group["workoutSteps"]
+    assert rep["endCondition"]["conditionTypeKey"] == "time" and rep["endConditionValue"] == 180
+    assert rep["targetType"]["workoutTargetTypeKey"] == "pace.zone"
+    assert rest["stepType"]["stepTypeKey"] == "recovery" and rest["endConditionValue"] == 120
+
+
+def test_catalog_repetitions_with_distance_recovery_and_hills_without_target():
+    day = PlannedDay(day=2, type="repetition", distance_km=8, workout_id="R-400", reps=5)
+    _, group, _ = steps(build_workout(day, ZONES, MAX_HR))
+    rep, rest = group["workoutSteps"]
+    assert rest["endCondition"]["conditionTypeKey"] == "distance" and rest["endConditionValue"] == 400
+    # разминка + повторы + трусца по 400 м + заминка = дистанция дня
+    assert total_m(steps(build_workout(day, ZONES, MAX_HR))) == pytest.approx(8000, abs=10)
+
+    hills = PlannedDay(day=2, type="repetition", distance_km=9, workout_id="R-hills-60s", reps=8)
+    _, group, _ = steps(build_workout(hills, ZONES, MAX_HR))
+    assert group["workoutSteps"][0]["targetType"]["workoutTargetTypeKey"] == "no.target"
+
+
 def test_short_warmup_is_skipped():
     day = PlannedDay(day=2, type="threshold", distance_km=5.2, quality_km=5)
     w_steps = steps(build_workout(day, ZONES, MAX_HR))
