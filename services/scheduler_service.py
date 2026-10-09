@@ -11,6 +11,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from bot.keyboards import get_garmin_export_keyboard
 from clients.garmin import GarminClient, GarminClientError
+from clients.llm_usage import USAGE_WEEKLY, usage_scope
 from database import async_session_maker
 from models.athlete_profile import AthleteProfile
 from models.training_plan import TrainingPlan
@@ -294,7 +295,9 @@ class TrainingSchedulerService:
                     async with async_session_maker() as session:
                         if await UserService.has_weekly_plan(session, plan.id, monday):
                             continue
-                    if await self.send_week(user, plan, profile, today=local.date()) == WeekStatus.SENT:
+                    with usage_scope(user.telegram_chat_id, USAGE_WEEKLY):
+                        status = await self.send_week(user, plan, profile, today=local.date())
+                    if status == WeekStatus.SENT:
                         sent += 1
             except Exception as exc:  # ошибка одного пользователя не останавливает рассылку остальным
                 logger.exception("Ошибка при генерации недели для user_id=%s: %s", user.id, exc)

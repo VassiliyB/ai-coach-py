@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-@router.message(Command("analyze"), flags={"user_lock": "/analyze"})
+@router.message(Command("analyze"), flags={"user_lock": "/analyze", "llm": "/analyze"})
 async def handle_analyze(message: Message, garmin: GarminClient, ai_coach: AICoachService) -> None:
     """Анализ последней тренировки: зону по темпу и пульсу считает код, модель даёт вердикт."""
     chat_id = message.chat.id

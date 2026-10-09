@@ -1,14 +1,15 @@
 # services/user_service.py
 """Тонкий фасад над репозиториями: управляет транзакциями (commit), логики здесь нет."""
 import logging
-from datetime import date, tzinfo
+from datetime import date, datetime, tzinfo
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from clients.llm_usage import UsageRecord, UsageScope
 from models import AppUser, AthleteProfile, TrainingPlan, WeeklyPlan
 from models.user import ACCESS_APPROVED, ACCESS_PENDING
-from repositories import ActivityRepository, PlanRepository, UserRepository
+from repositories import ActivityRepository, PlanRepository, UsageRepository, UsageTotals, UserRepository
 from schemas.plan import MacroPlan, WeekPlan
 from services.plan_storage import plan_to_details
 from services.user_time import to_tzinfo
@@ -86,6 +87,23 @@ class UserService:
         from config import settings
         user = await UserRepository(session).get_by_chat_id(chat_id)
         return to_tzinfo(user.timezone if user else None, default=settings.DEFAULT_TIMEZONE)
+
+    @staticmethod
+    async def record_llm_usage(session: AsyncSession, scope: UsageScope, record: UsageRecord) -> None:
+        """Sink для clients.llm_usage: одна строка llm_usage на вызов модели."""
+        await UsageRepository(session).add(
+            scope.chat_id, scope.command, scope.request_id, record.model,
+            record.input_tokens, record.output_tokens, record.cache_read_tokens, record.cache_write_tokens,
+        )
+        await session.commit()
+
+    @staticmethod
+    async def count_requests_since(session: AsyncSession, chat_id: int, command: str, since: datetime) -> int:
+        return await UsageRepository(session).count_requests(chat_id, command, since)
+
+    @staticmethod
+    async def usage_totals_since(session: AsyncSession, since: datetime) -> Dict[int, UsageTotals]:
+        return await UsageRepository(session).totals_by_chat(since)
 
     @staticmethod
     async def set_garmin_linked(session: AsyncSession, chat_id: int, linked: bool = True) -> None:

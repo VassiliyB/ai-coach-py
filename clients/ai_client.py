@@ -7,7 +7,8 @@ from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitErr
 from pydantic import BaseModel, SecretStr
 
 from clients.ai_errors import AIClientError, AIResponseFormatError
-from clients.rate_limit import RATE_LIMIT_RETRIES, retry_delay
+from clients.llm_usage import report_usage, usage_from_openai
+from clients.rate_limit import RATE_LIMIT_RETRIES, fit_max_tokens, retry_delay
 from config import settings
 
 __all__ = ["AIClient", "AIClientError", "AIResponseFormatError"]
@@ -71,19 +72,22 @@ class AIClient:
         kwargs: Dict[str, Any] = {}
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        # Иначе длинный запрос (повтор генератора с прошлым ответом) Groq отклонит с 413 ещё до генерации
+        fitted = fit_max_tokens(messages, max_tokens, settings.GROQ_TPM_LIMIT)
 
         try:
             logger.debug(
-                "Отправка запроса в Groq (модель: %s, сообщений: %d, json: %s)",
-                target_model, len(messages), json_mode,
+                "Отправка запроса в Groq (модель: %s, сообщений: %d, json: %s, max_tokens: %d)",
+                target_model, len(messages), json_mode, fitted,
             )
             response = await self._create_with_rate_limit_retry(
                 model=target_model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=fitted,
                 **kwargs,
             )
+            report_usage(usage_from_openai(response))
             choice = response.choices[0]
             if json_mode and choice.finish_reason == "length":
                 raise AIResponseFormatError("Ответ ИИ оказался обрезан по длине. Попробуйте ещё раз.")

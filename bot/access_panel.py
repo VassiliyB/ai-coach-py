@@ -1,12 +1,14 @@
 # bot/access_panel.py
 """Панель /users: список пользователей по статусу доступа и кнопки смены доступа (без I/O)."""
 import html
-from typing import Collection, List, Sequence, Tuple
+from datetime import date
+from typing import Collection, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from models import AppUser
 from models.user import ACCESS_APPROVED, ACCESS_BLOCKED, ACCESS_PENDING
+from repositories.usage_repo import UsageTotals
 
 PANEL_APPROVE_PREFIX = "users:approve:"
 PANEL_BLOCK_PREFIX = "users:block:"
@@ -63,14 +65,52 @@ def _buttons(user: AppUser) -> List[InlineKeyboardButton]:
     return [InlineKeyboardButton(text=f"✅ Вернуть доступ: {name}", callback_data=approve)]
 
 
+def format_tokens(count: int) -> str:
+    """1234 -> '1.2 тыс.', 2_500_000 -> '2.5 млн', меньше тысячи как есть."""
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f} млн"
+    if count >= 1000:
+        return f"{count / 1000:.1f} тыс."
+    return str(count)
+
+
+def usage_text(totals: UsageTotals) -> str:
+    """Запросы и токены: вход без кэша, кэш отдельно (чтение из кэша примерно в 10 раз дешевле)."""
+    cache = f", кэш {format_tokens(totals.cache_tokens)}" if totals.cache_tokens else ""
+    return (
+        f"{totals.requests} запр. · вход {format_tokens(totals.input_tokens)}{cache}"
+        f" · выход {format_tokens(totals.output_tokens)}"
+    )
+
+
+def sum_totals(items: Iterable[UsageTotals]) -> UsageTotals:
+    items = list(items)
+    return UsageTotals(
+        input_tokens=sum(t.input_tokens for t in items),
+        cache_tokens=sum(t.cache_tokens for t in items),
+        output_tokens=sum(t.output_tokens for t in items),
+        requests=sum(t.requests for t in items),
+    )
+
+
 def render_users_panel(
-    users: Sequence[AppUser], admin_ids: Collection[int],
+    users: Sequence[AppUser],
+    admin_ids: Collection[int],
+    usage: Optional[Mapping[int, UsageTotals]] = None,
+    usage_since: Optional[date] = None,
 ) -> Tuple[str, InlineKeyboardMarkup | None]:
-    """Текст списка (HTML) и кнопки: по строке на пользователя, у админов кнопок нет."""
+    """Текст списка (HTML) и кнопки: по строке на пользователя, у админов кнопок нет.
+
+    usage: расход токенов с usage_since по chat_id; у пользователя без расхода строки нет.
+    """
     if not users:
         return "Пользователей пока нет.", None
+    usage = usage or {}
 
     lines = ["👥 <b>Пользователи бота</b>"]
+    if usage_since is not None:
+        total = usage_text(sum_totals(usage.values())) if usage else "нет"
+        lines.append(f"🪙 Расход ИИ с {usage_since:%d.%m}: {total}")
     rows: List[List[InlineKeyboardButton]] = []
     for status in STATUS_ORDER:
         group = [u for u in users if u.access == status]
@@ -81,6 +121,8 @@ def render_users_panel(
             is_admin = user.telegram_chat_id in admin_ids
             mark = " (админ)" if is_admin else ""
             lines.append(f"• {describe_user(user)}{mark}, с {user.created_at:%d.%m.%Y}")
+            if user.telegram_chat_id in usage:
+                lines.append(f"   🪙 {usage_text(usage[user.telegram_chat_id])}")
             if not is_admin:
                 rows.append(_buttons(user))
     lines.append(HELP_WITH_USERS if rows else HELP_ONLY_ADMINS)

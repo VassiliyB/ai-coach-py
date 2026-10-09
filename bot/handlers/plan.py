@@ -150,7 +150,7 @@ async def handle_race_date_entered(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(PlanCreationStates.waiting_for_goal, flags={"user_lock": "составление плана"})
+@router.message(PlanCreationStates.waiting_for_goal, flags={"user_lock": "составление плана", "llm": "/plan"})
 async def handle_goal_entered(message: Message, state: FSMContext, plan_generator: PlanGenerator) -> None:
     """Цель временем или темпом: нереалистичную не принимаем, объясняем почему и что достижимо."""
     data = await state.get_data()
@@ -194,7 +194,7 @@ async def handle_goal_entered(message: Message, state: FSMContext, plan_generato
 
 @router.callback_query(
     PlanCreationStates.waiting_for_goal, F.data.in_({GOAL_NONE, GOAL_SUGGESTED}),
-    flags={"user_lock": "составление плана"},
+    flags={"user_lock": "составление плана", "llm": "/plan"},
 )
 async def handle_goal_button(callback: CallbackQuery, state: FSMContext, plan_generator: PlanGenerator) -> None:
     """«Без цели» или предложенная реалистичная цель."""
@@ -346,7 +346,7 @@ async def _send_intro_days(
         )
 
 
-@router.message(Command("test_week"), flags={"user_lock": "/test_week"})
+@router.message(Command("test_week"), flags={"user_lock": "/test_week", "llm": "/test_week"})
 async def handle_test_week(message: Message, scheduler_service: TrainingSchedulerService) -> None:
     """Ручной запуск генерации микроцикла на неделю (отладочная команда)."""
     chat_id = message.chat.id

@@ -1,17 +1,45 @@
 # bot/middlewares.py
-"""Middleware бота: доступ по одобрению админа и блокировка тяжёлых команд (флаг user_lock)."""
+"""Middleware бота: доступ по одобрению админа, блокировка тяжёлых команд (флаг user_lock)
+и учёт расхода токенов по командам (флаг llm)."""
 import html
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from aiogram import BaseMiddleware
 from aiogram.dispatcher.flags import get_flag
 from aiogram.enums import ChatType
 from aiogram.types import CallbackQuery, TelegramObject, Update
 
+from clients.llm_usage import usage_scope
 from services.access_control import DENIED_TEXT, AccessControl, AccessDecision
 from services.user_locks import UserLocks
 
 USER_LOCK_FLAG = "user_lock"   # значение флага: название операции для сообщения пользователю
+LLM_FLAG = "llm"               # значение флага: команда, на которую записывается расход токенов (clients.llm_usage)
+
+
+def _event_chat_id(event: TelegramObject) -> Optional[int]:
+    chat = getattr(event, "chat", None)
+    if chat is None and isinstance(event, CallbackQuery) and event.message is not None:
+        chat = event.message.chat
+    return chat.id if chat is not None else None
+
+
+class LlmUsageMiddleware(BaseMiddleware):
+    """Внутренний middleware: хендлер с флагом llm работает в usage_scope, вызовы модели в нём записываются
+    на пользователя и команду одним запросом."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: Dict[str, Any],
+    ) -> Any:
+        command = get_flag(data, LLM_FLAG)
+        chat_id = _event_chat_id(event)
+        if not command or chat_id is None:
+            return await handler(event, data)
+        with usage_scope(chat_id, command):
+            return await handler(event, data)
 
 
 class UserLockMiddleware(BaseMiddleware):

@@ -41,7 +41,7 @@ class AICoachService:
             from clients.llm import create_llm_client  # клиент выбранного провайдера, а не всегда Groq
             ai_client = create_llm_client()
         self.ai_client = ai_client
-        self.knowledge_base = self._load_knowledge_base(knowledge_path or settings.KNOWLEDGE_BASE_PATH)
+        self.knowledge_base = self._load_knowledge_base(knowledge_path or settings.knowledge_base_path)
         self._system_prompt = self._build_system_prompt()  # собираем один раз
 
     # ---------------- Подготовка промптов ----------------

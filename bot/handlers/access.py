@@ -5,12 +5,12 @@
 до роутеров такое сообщение не доходит. Команды и кнопки здесь только для админов.
 """
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import Command, CommandObject, Filter
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from bot.access_panel import PANEL_APPROVE_PREFIX, PANEL_BLOCK_PREFIX, describe_user, render_users_panel
 from bot.keyboards import ACCESS_APPROVE_PREFIX, ACCESS_REJECT_PREFIX, get_access_request_keyboard
@@ -19,6 +19,7 @@ from models import AppUser
 from models.user import ACCESS_APPROVED, ACCESS_BLOCKED
 from services.access_control import AccessControl
 from services.user_service import UserService
+from services.user_time import local_month_start
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -162,12 +163,19 @@ async def _handle_command(
     await message.answer(f"{verdict}: {describe_user(user)}", parse_mode="HTML")
 
 
+async def _panel(admin_chat_id: int, access: AccessControl) -> Tuple[str, Optional[InlineKeyboardMarkup]]:
+    """Панель со списком и расходом токенов за текущий месяц по поясу админа."""
+    async with async_session_maker() as session:
+        users = await UserService.list_users(session)
+        since = local_month_start(await UserService.timezone_for_chat(session, admin_chat_id))
+        usage = await UserService.usage_totals_since(session, since)
+    return render_users_panel(users, access.admin_ids, usage, since.date())
+
+
 @router.message(Command("users"))
 async def handle_users(message: Message, access: AccessControl) -> None:
     """Панель доступа: список пользователей с кнопками; нажатие обновляет список на месте."""
-    async with async_session_maker() as session:
-        users = await UserService.list_users(session)
-    text, markup = render_users_panel(users, access.admin_ids)
+    text, markup = await _panel(message.chat.id, access)
     await message.answer(text, reply_markup=markup, parse_mode="HTML")
 
 
@@ -186,9 +194,7 @@ async def handle_panel_button(callback: CallbackQuery, bot: Bot, access: AccessC
     else:
         notice = f"{'✅ Доступ открыт' if approve else '⛔ Доступ закрыт'}: {user.first_name or chat_id}"
 
-    async with async_session_maker() as session:
-        users = await UserService.list_users(session)
-    text, markup = render_users_panel(users, access.admin_ids)
+    text, markup = await _panel(callback.message.chat.id, access)
     try:
         await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except TelegramBadRequest as exc:   # повторное нажатие: список не изменился

@@ -119,7 +119,7 @@ def intro_long_cap_km(weekly_km: float, zones: Optional[TrainingZones]) -> float
 
 def _load_knowledge() -> str:
     from config import settings
-    path = settings.KNOWLEDGE_BASE_PATH
+    path = settings.knowledge_base_path   # у Groq короткая версия
     if not path.is_file():
         logger.warning("Файл базы знаний %s не найден.", path)
         return ""

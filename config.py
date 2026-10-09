@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     ADMIN_CHAT_IDS: Annotated[frozenset[int], NoDecode] = frozenset()
     # Ошибки (записи лога ERROR) приходят админам в Telegram, одна и та же не чаще раза в час
     ADMIN_ALERTS: bool = True
+    # Вопросов /ask в день на пользователя (по его поясу, считается по llm_usage); 0 = без лимита
+    ASK_DAILY_LIMIT: int = Field(default=8, ge=0)
 
     # LLM: провайдер выбирается здесь, остальной код работает через общий интерфейс generate_response
     LLM_PROVIDER: Literal["groq", "claude"] = "groq"
@@ -28,7 +30,10 @@ class Settings(BaseSettings):
     # LLM (Groq)
     GROQ_API_KEY: SecretStr = Field(..., description="API-ключ Groq Cloud")
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
-    GROQ_MODEL: str = "openai/gpt-oss-20b"
+    # 120b: 20b на неделях с каталогом тренировок не укладывается в 3 попытки (живая проверка)
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    # Лимит токенов в минуту тарифа Groq (бесплатный 8000): под него подгоняется max_tokens запроса; 0 = не подгонять
+    GROQ_TPM_LIMIT: int = Field(default=8000, ge=0)
 
     # LLM (Claude). Haiku 5.5 на время разработки: дешевле Opus и Sonnet
     ANTHROPIC_API_KEY: Optional[SecretStr] = Field(default=None, description="API-ключ Anthropic")
@@ -51,6 +56,8 @@ class Settings(BaseSettings):
     # Пути (относительные значения из .env считаются от корня проекта)
     GARMIN_TOKENS_DIR: Path = BASE_DIR / ".garmin_tokens"
     KNOWLEDGE_BASE_PATH: Path = BASE_DIR / "sports_knowledge.txt"
+    # Короткая база для Groq: полная (~6 тыс. токенов) почти не оставляет места в лимите 8000 токенов в минуту
+    KNOWLEDGE_BASE_SHORT_PATH: Path = BASE_DIR / "sports_knowledge_short.txt"
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -66,7 +73,12 @@ class Settings(BaseSettings):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
 
-    @field_validator("GARMIN_TOKENS_DIR", "KNOWLEDGE_BASE_PATH")
+    @property
+    def knowledge_base_path(self) -> Path:
+        """База знаний для системного промпта: у Groq короткая, у Claude полная (её кэширует API)."""
+        return self.KNOWLEDGE_BASE_SHORT_PATH if self.LLM_PROVIDER == "groq" else self.KNOWLEDGE_BASE_PATH
+
+    @field_validator("GARMIN_TOKENS_DIR", "KNOWLEDGE_BASE_PATH", "KNOWLEDGE_BASE_SHORT_PATH")
     @classmethod
     def _make_absolute(cls, value: Path) -> Path:
         """Относительные пути привязываем к корню проекта."""

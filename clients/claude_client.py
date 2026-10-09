@@ -13,6 +13,7 @@ import anthropic
 from pydantic import BaseModel
 
 from clients.ai_errors import AIClientError, AIResponseFormatError
+from clients.llm_usage import report_usage, usage_from_anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ class ClaudeClient:
             response.model, usage.input_tokens, getattr(usage, "cache_read_input_tokens", None),
             getattr(usage, "cache_creation_input_tokens", None), usage.output_tokens, response.stop_reason,
         )
+        report_usage(usage_from_anthropic(response))
         if response.stop_reason == "refusal":
             raise AIClientError("ИИ отказался отвечать на этот запрос.")
         if response.stop_reason == "max_tokens" and (json_mode or response_schema is not None):

@@ -10,9 +10,11 @@ from bot.fsm_storage import check_fsm_storage, create_fsm_storage
 from bot.handlers import access as access_handlers
 from bot.handlers import analyze, ask, garmin_export, plan, race, show_plan, start, sync
 from bot.handlers import settings as settings_handlers
-from bot.middlewares import AccessMiddleware, UserLockMiddleware
+from bot.middlewares import AccessMiddleware, LlmUsageMiddleware, UserLockMiddleware
 from clients.garmin import GarminClient
 from clients.llm import create_llm_client
+from clients.llm_usage import UsageRecord, UsageScope, set_usage_sink
+from clients.llm_usage import drain as drain_usage
 from config import settings
 from database import async_session_maker, engine, run_migrations
 from services.access_control import AccessControl
@@ -54,6 +56,13 @@ async def main() -> None:
     garmin_client = GarminClient()
     ai_client = create_llm_client()  # один клиент (Groq или Claude) на текстовые ответы и планы
     logger.info("Провайдер LLM: %s", settings.LLM_PROVIDER)
+
+    # Расход токенов: клиенты LLM отчитываются, запись в llm_usage на пользователя и команду (clients.llm_usage)
+    async def save_usage(scope: UsageScope, record: UsageRecord) -> None:
+        async with async_session_maker() as session:
+            await UserService.record_llm_usage(session, scope, record)
+
+    set_usage_sink(save_usage)
     ai_coach = AICoachService(ai_client=ai_client)
     plan_generator = PlanGenerator(ai_client=ai_client)
     # Доступ по одобрению админа: одобренные загружаются в память, чтобы не читать БД на каждое сообщение
@@ -94,6 +103,10 @@ async def main() -> None:
     lock_middleware = UserLockMiddleware(user_locks)
     dp.message.middleware(lock_middleware)
     dp.callback_query.middleware(lock_middleware)
+    # После блокировки: хендлер с флагом llm пишет расход токенов на пользователя и команду
+    usage_middleware = LlmUsageMiddleware()
+    dp.message.middleware(usage_middleware)
+    dp.callback_query.middleware(usage_middleware)
 
     # 4. Роутеры. Порядок важен: команды раньше общих хендлеров состояний.
     dp.include_router(access_handlers.router)   # только для админов (фильтр роутера)
@@ -121,6 +134,7 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         scheduler_service.shutdown()
+        await drain_usage()             # дописать расход токенов до закрытия пула БД
         if alerts is not None:
             await alerts.aclose()       # накопленные ошибки уходят до закрытия сессии бота
             logging.getLogger().removeHandler(alerts)

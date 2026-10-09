@@ -2,6 +2,7 @@ from models.activity import ProcessedActivity
 from models.athlete_profile import AthleteProfile
 from models.base import Base
 from models.book_chunk import BookChunk
+from models.llm_usage import LlmUsage
 from models.message import ChatMessage
 from models.training_plan import TrainingPlan
 from models.user import AppUser
@@ -16,4 +17,5 @@ __all__ = [
     "ProcessedActivity",
     "ChatMessage",
     "BookChunk",
+    "LlmUsage",
 ]

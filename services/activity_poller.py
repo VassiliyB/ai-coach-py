@@ -8,6 +8,7 @@ from typing import Optional
 from aiogram import Bot
 
 from clients.garmin import GarminAuthError, GarminClient, GarminRateLimitError
+from clients.llm_usage import USAGE_AUTO_ANALYSIS, usage_scope
 from database import async_session_maker
 from models.athlete_profile import AthleteProfile
 from models.user import AppUser
@@ -91,7 +92,8 @@ class ActivityPoller:
                 "user_id=%s: новых тренировок %d, к разбору %d", user.id, len(new), len(to_analyze),
             )
         for act in to_analyze:
-            await self._send_analysis(user, profile, act)
+            with usage_scope(user.telegram_chat_id, USAGE_AUTO_ANALYSIS):   # каждая тренировка отдельным запросом
+                await self._send_analysis(user, profile, act)
         return len(to_analyze)
 
     async def _send_analysis(self, user: AppUser, profile: Optional[AthleteProfile], act: dict) -> None:

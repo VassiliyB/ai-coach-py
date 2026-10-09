@@ -69,6 +69,18 @@ def local_today(tz: tzinfo, now_utc: Optional[datetime] = None) -> date:
     return local_now(tz, now_utc).date()
 
 
+def local_day_start(tz: tzinfo, now_utc: Optional[datetime] = None) -> datetime:
+    """Местная полночь сегодня (aware): с неё считаются дневные лимиты."""
+    today = local_today(tz, now_utc)
+    return datetime(today.year, today.month, today.day, tzinfo=tz)
+
+
+def local_month_start(tz: tzinfo, now_utc: Optional[datetime] = None) -> datetime:
+    """Местная полночь 1-го числа текущего месяца (aware): расход за месяц."""
+    today = local_today(tz, now_utc)
+    return datetime(today.year, today.month, 1, tzinfo=tz)
+
+
 def is_weekly_send_time(local: datetime) -> bool:
     """Пора ли отправлять неделю: воскресенье с 15:00 по местному времени до конца дня.
 

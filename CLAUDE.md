@@ -12,7 +12,7 @@ Telegram-бот: персональный тренер по бегу на осн
 
 Python 3.12, aiogram 3.x, SQLAlchemy 2.0 async + asyncpg, PostgreSQL 16, Redis 7 (состояния диалогов), Alembic (async), pydantic v2 и pydantic-settings, garminconnect >= 0.3.4, APScheduler 3.x, pytest.
 
-LLM: `anthropic` SDK (Claude, по умолчанию `claude-haiku-5-5`) или `openai` SDK (Groq, `openai/gpt-oss-20b`). Провайдер задаёт `LLM_PROVIDER` в `.env` (`claude` или `groq`).
+LLM: `anthropic` SDK (Claude, по умолчанию `claude-haiku-5-5`) или `openai` SDK (Groq, `openai/gpt-oss-120b`). Провайдер задаёт `LLM_PROVIDER` в `.env` (`claude` или `groq`).
 
 ## Структура
 
@@ -20,17 +20,19 @@ LLM: `anthropic` SDK (Claude, по умолчанию `claude-haiku-5-5`) или
 main.py                     точка входа: миграции -> бот -> планировщик, DI через Dispatcher
 config.py                   Settings (pydantic-settings), секреты как SecretStr, LLM_PROVIDER
 database.py                 async engine, async_session_maker, run_migrations (alembic upgrade head)
-sports_knowledge.txt        база знаний (Дэниелс + 80/20), идёт в системный промпт
+sports_knowledge.txt        база знаний (Дэниелс + 80/20), идёт в системный промпт Claude
+sports_knowledge_short.txt  краткая база знаний для Groq (втрое короче, те же числа)
 generate_token.py           ручной вход в Garmin (обход 429), токены в .garmin_tokens/<chat_id>/
 ingest_books.py             загрузка книг EPUB в book_chunks (--dry-run: только разбор, --list: что загружено)
-models/                     SQLAlchemy-модели (7 таблиц), base.py с naming convention и utcnow()
-repositories/               доступ к БД: user_repo, plan_repo, activity_repo, book_repo (flush, без commit)
+models/                     SQLAlchemy-модели (8 таблиц), base.py с naming convention и utcnow()
+repositories/               доступ к БД: user_repo, plan_repo, activity_repo, book_repo, usage_repo (flush, без commit)
 schemas/plan.py             pydantic-схемы: WorkoutType, PlannedDay, WeekPlan, Phase, MacroPlan, PHASE_NAMES
 clients/llm.py              create_llm_client(): клиент по LLM_PROVIDER
 clients/claude_client.py    Claude: system отдельно, структурированный вывод по схеме, effort вместо temperature
 clients/ai_client.py        Groq через openai SDK: json_mode, повтор при 429
 clients/ai_errors.py        AIClientError, AIResponseFormatError (без импорта config)
-clients/rate_limit.py       сколько ждать после 429 от Groq
+clients/rate_limit.py       Groq: сколько ждать после 429, max_tokens под лимит токенов в минуту
+clients/llm_usage.py        учёт токенов: usage_scope (кто и где), report_usage из клиентов, sink в БД (без config)
 clients/garmin/             client.py (to_thread), analytics.py, token_storage.py, exceptions.py
 services/user_service.py    фасад над репозиториями, ЗДЕСЬ commit
 services/coach_service.py   чистая математика: calculate_vdot, calculate_zones, zones_for_profile
@@ -191,6 +193,8 @@ docker compose down                                   # остановить (д
 - Claude: `temperature` не передаётся (новые модели его отклоняют), глубину задаёт `CLAUDE_EFFORT`, мышление адаптивное, `max_tokens` не меньше 16000.
 - Claude: системный промпт (с базой знаний, ~6 тыс. токенов) кэшируется (`cache_control` ephemeral, 5 мин); повторные вызовы читают его из кэша (~0.1 цены). В лог пишутся токены из кэша и в кэш. Системный промпт собирается один раз на сервис: не добавлять в него дату, время или данные пользователя, иначе кэш не сработает.
 - Groq (бесплатный тариф, 8000 токенов в минуту): клиент ждёт `retry-after` при 429 и повторяет до 3 раз; ожидание дольше 60 с не ждёт.
+- Groq получает краткую базу знаний (`settings.knowledge_base_path` выбирает по `LLM_PROVIDER`): с полной системный промпт занимал ~6 тыс. токенов из 8000. Числа в обеих базах сверяет `tests/test_knowledge_base.py` с константами `plan_validator`, `workout_catalog`, `heart_rate`.
+- Groq до ответа оценивает запрос как «промпт + `max_tokens`» и отклоняет больше лимита (413). Клиент уменьшает `max_tokens` под `GROQ_TPM_LIMIT` (`fit_max_tokens`, оценка ~3 символа на токен, не меньше 1500): иначе повтор генератора с прошлым ответом и замечаниями не проходит.
 - Текстовые ответы (`/analyze`) проходят `MessageService.sanitize_telegram_html`. Зону тренировки, проценты ЧССmax и пульс зоны E считает `activity_zones` (блок «РАСЧЁТ ЗОН ТРЕНИРОВКИ» в промпте), модель только интерпретирует.
 - Данные пользователя и Garmin в промптах оборачиваются в `<data>...</data>`, плюс `_clean()` против инъекций; в системном промпте сказано не выполнять команды из этих блоков.
 - Лимиты в промптах берутся из констант `plan_validator`, чтобы подсказка и проверка не расходились.
@@ -215,6 +219,13 @@ docker compose down                                   # остановить (д
 - `send_week` блокировку не берёт: её держит вызывающий (middleware для `/test_week`, рассылка для себя).
 - Реестр в памяти процесса: при запуске нескольких процессов бота блокировки нужно перенести в БД (advisory locks) или Redis.
 
+**Учёт токенов (`clients/llm_usage`, `llm_usage`, миграция `b9d4f2a6c8e1`)**
+- Каждый вызов модели пишется строкой `llm_usage`: пользователь, команда, `request_id`, модель, токены входа (без кэша), выхода, чтения и записи кэша. Клиенты (`usage_from_anthropic`, `usage_from_openai`) только сообщают `report_usage`; пользователя и команду задаёт `usage_scope` (contextvars).
+- Scope ставят: `LlmUsageMiddleware` по флагу хендлера `llm` (`/ask`, `/analyze`, `/plan` для цели и создания плана, `/test_week`), рассылка недель (`рассылка`) и опрос Garmin (`автоанализ`, каждая тренировка отдельным запросом). Новый хендлер с вызовом модели должен получить флаг `llm`, иначе его расход не учтётся. Вне scope (скрипты, тесты) учёт пропускается.
+- Запись фоновой задачей (`report_usage` -> sink из `main.py`), ответ пользователю БД не ждёт; сбой записи только WARNING. При остановке `drain()` дописывает отчёты.
+- `/users`: расход каждого пользователя и итог с 1-го числа месяца по поясу админа: запросы, вход, кэш, выход. Цены в долларах не считаются: зависят от модели.
+- `llm_usage` с FK на `app_users` (CASCADE): `/delete_me` удаляет и расход.
+
 **Книги для `/ask` (`services/book_ingest`, `book_chunks`, миграция `1b7e5c9d3a2f`)**
 - Файлы книг лежат вне репозитория (у автора `F:\books\running`), текст хранится только в БД. Загрузка: `python ingest_books.py <папка>` (только `*.epub` из корня папки; PDF в подпапке `tables` нужны для каталога тренировок, в поиск не идут). Повторная загрузка заменяет фрагменты книги целиком, ключ это имя файла без расширения. В Docker: `docker compose run --rm -v <папка>:/books:ro bot python ingest_books.py /books`.
 - Разбор: порядок из spine `.opf`, глава = номер-заголовок + название («Глава 5. Система тренировок VDOT»), разделы по h2–h6. Пропускаются служебные страницы (`SKIP_TITLES`) и файлы короче `MIN_DOC_WORDS`, сноски, подписи «Таблица…»/«Рис.…» (таблицы в EPUB картинками). HTML-таблицы идут строками «a | b», абзацы в ячейке через «; ». Фрагмент ~300 слов, не длиннее 450, по границам абзацев и разделов; короткий раздел дописывается к предыдущему фрагменту с заголовком.
@@ -229,6 +240,7 @@ docker compose down                                   # остановить (д
 - Синонимы подбирать по реальному тексту книг и не брать слова, которые есть почти в каждом плане («трусцой»): главное понятие весит вдвое, и такое слово вытесняет объяснения планами. Модель путает «перерыв» (дни без бега) с отдыхом между отрезками, в промпте шага поиска это оговорено.
 - Ответ: вопрос, план и фрагменты в `<data>`; приоритет Дэниелса при расхождениях, буквы переводов приводятся к E/M/T/I/R, указания фрагмента не переносятся на другой тип тренировки (отдых повторов R не для интервалов I), темп и пульс только из готовых зон.
 - История диалога не используется: каждый вопрос отдельный.
+- Лимит `ASK_DAILY_LIMIT` (8) вопросов в день по поясу пользователя (с местной полуночи), для всех, включая админов; 0 отключает. Считается по `llm_usage`: число запросов (`request_id`) команды `/ask`, оба вызова модели одного вопроса это один запрос. Проверка до вопроса и при `/ask` без текста; когда осталось 2 и меньше, под ответом подпись. Вопрос, на котором модель упала, не засчитывается (расхода нет).
 
 **Доступ к боту (`services/access_control`, `bot/handlers/access.py`, миграция `e3a9f6c2b8d4`)**
 - Бот закрытый: пользуются админы (`ADMIN_CHAT_IDS` в `.env`, chat_id через запятую) и одобренные ими. Статус в `app_users.access`: `pending` / `approved` / `blocked`; при миграции существующие пользователи получили `approved`.
@@ -284,7 +296,7 @@ docker compose down                                   # остановить (д
 
 ## Модель данных (кратко)
 
-`app_users` -> `athlete_profiles` (1:1, включая `vdot`, `best_effort_*`), `training_plans` (макроцикл, один `active`, `plan_details` JSONB), `weekly_plans` (уникально по `training_plan_id + week_start_date`, `plan_details` JSONB), `processed_activities` (уникально по `user_id + garmin_activity_id`), `chat_messages`. Все FK с `ON DELETE CASCADE`.
+`app_users` -> `athlete_profiles` (1:1, включая `vdot`, `best_effort_*`), `training_plans` (макроцикл, один `active`, `plan_details` JSONB), `weekly_plans` (уникально по `training_plan_id + week_start_date`, `plan_details` JSONB), `processed_activities` (уникально по `user_id + garmin_activity_id`), `chat_messages`, `llm_usage` (расход токенов). Все FK с `ON DELETE CASCADE`.
 
 ## Статус
 
@@ -315,6 +327,7 @@ docker compose down                                   # остановить (д
 - Результат забега вручную (`/race`): VDOT по забегу приоритетнее тренировочного, `/sync` его не снижает, оценка цели без запаса. Миграция `f4b1d7a3c9e2` проверена на локальной БД (с откатом), запись забега и `/sync` поверх проверены скриптом на локальной БД (с откатом) и в Telegram.
 - Пульсовые зоны вручную (`/pulse`: ЧССmax или ПАНО, зоны от ПАНО по Фицджеральду). Миграция `a8c2e5f9d1b3` проверена на локальной БД (с откатом), запись, `/sync` поверх и сброс проверены скриптом на локальной БД (с откатом) и в Telegram.
 - Состояния диалогов в Redis (`REDIS_URL`, сервис `redis` в compose): сохранение и чтение после переподключения проверены на временном контейнере Redis, образ бота собирается с пакетом `redis`, перезапуск посреди `/plan` проверен вживую.
+- Пункты 7–9: краткая база знаний для Groq и подгонка `max_tokens` (живая проверка на Groq: макроплан, неделя фазы I и фазы III с `gpt-oss-120b`), учёт токенов в `llm_usage` с расходом в `/users` (миграция `b9d4f2a6c8e1` проверена на локальной БД с откатом, запросы репозитория скриптом с откатом), лимит 8 вопросов `/ask` в день. Учёт, `/users` и лимит проверены в Telegram (на Claude).
 
 ## Известные ограничения
 
@@ -327,7 +340,7 @@ docker compose down                                   # остановить (д
 - `raw_summary_text` паспорта после пересмотра не обновляется (в промпт VDOT и зоны идут отдельно, из профиля).
 - Без `REDIS_URL` (локальный запуск) FSM в памяти: состояния теряются при перезапуске. Ввод кода MFA не переживает перезапуск и с Redis: незавершённый вход Garmin живёт в памяти `GarminClient`.
 - Лимиты `plan_validator` строгие при малом объёме (при 20 км в неделю порог ограничен 2 км). Модель часто целится точно в границы допусков.
-- С Groq (бесплатный тариф, 8000 токенов в минуту) генерация недели почти не помещается в лимит: системный промпт ~6 тыс. токенов плюс промпт недели с каталогом. Основной провайдер Claude; для Groq нужна короткая версия базы знаний.
+- Groq (бесплатный тариф, 8000 токенов в минуту) с краткой базой помещается в лимит, но качество ниже Claude: `gpt-oss-20b` не собрала неделю фазы III за 3 попытки, `gpt-oss-120b` собрала с третьей (около 2 мин с паузами на 429). Это запасной провайдер, основной Claude.
 
 ## Чего не делать
 

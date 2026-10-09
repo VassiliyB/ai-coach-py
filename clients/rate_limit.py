@@ -1,7 +1,7 @@
 # clients/rate_limit.py
-"""Сколько ждать после ответа 429 от Groq. Чистая функция, без I/O."""
+"""Лимиты Groq: сколько ждать после 429 и сколько max_tokens помещается в лимит токенов в минуту. Без I/O."""
 import re
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Sequence
 
 RATE_LIMIT_RETRIES = 3          # сколько раз повторять запрос после 429
 RATE_LIMIT_MAX_WAIT = 60.0      # дольше не ждём: это уже не минутный, а дневной лимит
@@ -29,3 +29,24 @@ def retry_delay(headers: Optional[Mapping[str, str]], message: str) -> Optional[
         delay = RATE_LIMIT_DEFAULT_WAIT
     delay += RATE_LIMIT_PAD
     return delay if delay <= RATE_LIMIT_MAX_WAIT else None
+
+
+# Groq до ответа оценивает запрос как «промпт + max_tokens» и отклоняет (413) всё, что больше лимита
+# токенов в минуту (бесплатный тариф 8000). Повтор генератора с прошлым ответом и замечаниями длиннее
+# первого запроса и упирается в лимит, если max_tokens не уменьшить.
+CHARS_PER_TOKEN_ESTIMATE = 3.0   # с запасом: русский текст в токенизаторе gpt-oss около 2.5–4 символов
+MESSAGE_OVERHEAD_TOKENS = 20
+MIN_COMPLETION_TOKENS = 1500     # меньше модели с рассуждениями не хватит на ответ
+
+
+def estimate_prompt_tokens(messages: Sequence[Mapping[str, str]]) -> int:
+    chars = sum(len(m.get("content") or "") for m in messages)
+    return int(chars / CHARS_PER_TOKEN_ESTIMATE) + MESSAGE_OVERHEAD_TOKENS * len(messages)
+
+
+def fit_max_tokens(messages: Sequence[Mapping[str, str]], max_tokens: int, tpm_limit: int) -> int:
+    """max_tokens, при котором оценка запроса не больше tpm_limit (0: без лимита). Не меньше MIN_COMPLETION_TOKENS."""
+    if not tpm_limit:
+        return max_tokens
+    room = tpm_limit - estimate_prompt_tokens(messages)
+    return max(MIN_COMPLETION_TOKENS, min(max_tokens, room))
