@@ -10,6 +10,7 @@ from clients.garmin import GarminAuthError, GarminClient
 from database import async_session_maker
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context, zones_for_profile
+from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
 from services.message_service import MessageService
 from services.user_service import UserService
 
@@ -55,10 +56,8 @@ async def handle_analyze(message: Message, garmin: GarminClient, ai_coach: AICoa
             await message.answer(chunk, parse_mode="HTML")
 
     except GarminAuthError:
-        await status_msg.edit_text(
-            "❌ Сессия Garmin истекла. Выполните повторный вход через <code>/start</code>.",
-            parse_mode="HTML",
-        )
+        await reset_garmin_link(garmin, chat_id)   # иначе /start не покажет кнопку входа
+        await status_msg.edit_text(RELOGIN_TEXT, parse_mode="HTML")
     except AIClientError as exc:
         await status_msg.edit_text(f"❌ {exc}")
     except Exception as exc:

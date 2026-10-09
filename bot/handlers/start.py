@@ -6,7 +6,7 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardRemove
 
 from bot.keyboards import get_garmin_auth_keyboard
 from bot.states import AuthStates
@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 MFA_CODE_LENGTHS = (6, 8)
+
+
+async def _announce_linked(status_msg: Message, message: Message, text: str) -> None:
+    """Сообщение об успешном входе вместе со снятием кнопки входа.
+
+    Отредактированное сообщение не может убрать reply-клавиатуру, поэтому статус удаляется
+    и отправляется новое сообщение с ReplyKeyboardRemove.
+    """
+    await status_msg.delete()
+    await message.answer(text, reply_markup=ReplyKeyboardRemove(), parse_mode="HTML")
 
 
 @router.message(CommandStart())
@@ -49,6 +59,7 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
             "• <code>/analyze</code> — разобрать последнюю пробежку\n"
             "• <code>/timezone</code> — часовой пояс для расписаний\n"
             "• <code>/delete_me</code> — удалить все свои данные",
+            reply_markup=ReplyKeyboardRemove(),   # убирает кнопку входа, оставшуюся с момента подключения
             parse_mode="HTML",
         )
     else:
@@ -65,6 +76,17 @@ async def handle_start(message: Message, state: FSMContext, garmin: GarminClient
 async def handle_webapp_data(message: Message, state: FSMContext, garmin: GarminClient) -> None:
     """Шаг 1: приём email и пароля из WebApp."""
     chat_id = message.chat.id
+
+    # Кнопка могла остаться на экране: подключённому пользователю повторный вход в Garmin не нужен
+    # (лишний вход рискует блокировкой 429). Если сессия истечёт, бот сам сбросит привязку
+    async with async_session_maker() as session:
+        user = await UserService.get_or_create_user(session, chat_id)
+    if garmin.has_saved_tokens(chat_id) and user.garmin_linked:
+        await message.answer(
+            "✅ Garmin Connect уже подключён, повторный вход не нужен.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return
 
     try:
         data = json.loads(message.web_app_data.data)
@@ -96,10 +118,10 @@ async def handle_webapp_data(message: Message, state: FSMContext, garmin: Garmin
         async with async_session_maker() as session:
             await UserService.set_garmin_linked(session=session, chat_id=chat_id, linked=True)
 
-        await status_msg.edit_text(
+        await _announce_linked(
+            status_msg, message,
             "✅ <b>Garmin Connect подключен!</b>\n\n"
             "Вызовите <code>/sync</code> для загрузки спортивного паспорта.",
-            parse_mode="HTML",
         )
 
     except GarminRateLimitError as exc:
@@ -137,10 +159,10 @@ async def handle_mfa_code_entered(message: Message, state: FSMContext, garmin: G
             await UserService.set_garmin_linked(session=session, chat_id=chat_id, linked=True)
         await state.clear()
 
-        await status_msg.edit_text(
+        await _announce_linked(
+            status_msg, message,
             "🎉 <b>Авторизация завершена!</b>\n\n"
             "Напишите <code>/sync</code>, чтобы загрузить спортивный паспорт.",
-            parse_mode="HTML",
         )
 
     except GarminAuthError:

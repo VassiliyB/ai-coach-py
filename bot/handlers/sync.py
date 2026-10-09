@@ -8,6 +8,7 @@ from aiogram.types import Message
 
 from clients.garmin import GarminAuthError, GarminClient, GarminRateLimitError
 from database import async_session_maker
+from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
 from services.message_service import MessageService
 from services.user_service import UserService
 
@@ -59,10 +60,8 @@ async def handle_sync(message: Message, garmin: GarminClient) -> None:
     except GarminRateLimitError as exc:
         await status_msg.edit_text(f"⚠️ {exc}")
     except GarminAuthError:
-        await status_msg.edit_text(
-            "❌ Сессия Garmin истекла. Выполните повторный вход через <code>/start</code>.",
-            parse_mode="HTML",
-        )
+        await reset_garmin_link(garmin, chat_id)   # иначе /start не покажет кнопку входа
+        await status_msg.edit_text(RELOGIN_TEXT, parse_mode="HTML")
     except Exception:
         logger.exception("Ошибка синхронизации профиля (chat_id=%s)", chat_id)
         await status_msg.edit_text("❌ Не удалось получить данные из Garmin. Попробуйте позже.")

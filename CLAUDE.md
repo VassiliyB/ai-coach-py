@@ -45,6 +45,7 @@ services/ai_coach_service.py текстовый разбор тренировк�
 services/activity_zones.py зона тренировки по темпу и пульсу, % ЧССmax, серая зона, пульс выше зоны темпа
 services/activity_polling.py какие новые тренировки разбирать при опросе (чистые функции)
 services/activity_poller.py опрос Garmin (интервал ACTIVITY_POLL_MINUTES), автоматический разбор новых пробежек
+services/garmin_link.py     сброс привязки Garmin при истёкшей сессии (токены + garmin_linked)
 services/message_service.py sanitize_telegram_html, chunk_message (лимит 4000 символов)
 services/scheduler_service.py send_week, ежечасная проверка рассылки недель (ВС с 15:00 по поясу пользователя), опрос Garmin
 bot/                        states.py, keyboards.py, middlewares.py (UserLockMiddleware), handlers/{start,sync,plan,analyze,settings}.py
@@ -105,6 +106,8 @@ docker compose down                                   # остановить (д
 - Первый опрос пользователя (нет записей в `processed_activities`) помечает всё без разбора. Дальше тренировка сначала захватывается атомарной вставкой (`claim_activity`, `ON CONFLICT DO NOTHING`), потом разбирается: дублей не бывает, но при сбое ИИ разбор этой тренировки теряется.
 - Разбираются только беговые тренировки не старше 24 часов по `startTimeGMT`; более старые (например, после простоя бота) помечаются молча.
 - Ошибка 429 означает блок IP: помогает смена сети или `generate_token.py`.
+- Кнопка входа (reply-клавиатура с WebApp) показывается только неподключённым. Telegram держит её, пока бот явно не уберёт, поэтому `ReplyKeyboardRemove` отправляется после успешного входа (и сразу, и после MFA) и в ответе «С возвращением». Форма от уже подключённого пользователя повторный вход не запускает.
+- `GarminAuthError` только при настоящей ошибке авторизации (`GarminConnectAuthenticationError`); сеть и прочие сбои это `GarminClientError`, токены не трогаются. При `GarminAuthError` в `/sync`, `/analyze` и опросе `services.garmin_link.reset_garmin_link` удаляет токены и снимает `garmin_linked`, иначе `/start` не показал бы кнопку и войти заново было бы нельзя.
 
 **LLM**
 - Один клиент на приложение (`create_llm_client()` в `main.py`), в хендлеры и планировщик он попадает через DI. У обоих клиентов один интерфейс `generate_response(messages, ..., json_mode, response_schema)`.

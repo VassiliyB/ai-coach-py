@@ -14,6 +14,7 @@ from models.user import AppUser
 from services.activity_polling import FETCH_LIMIT, activity_id, select_for_analysis
 from services.ai_coach_service import AICoachService
 from services.coach_service import build_profile_context, zones_for_profile
+from services.garmin_link import RELOGIN_TEXT, reset_garmin_link
 from services.message_service import MessageService
 from services.user_locks import UserLocks
 from services.user_service import UserService
@@ -53,7 +54,16 @@ class ActivityPoller:
                 logger.warning("Опрос Garmin прерван на user_id=%s: %s", user.id, exc)
                 break
             except GarminAuthError:
-                logger.info("Опрос пропущен для user_id=%s: сессия Garmin истекла", user.id)
+                # Сброс привязки исключает пользователя из опроса: уведомление уходит один раз
+                try:
+                    await reset_garmin_link(self.garmin, user.telegram_chat_id)
+                    await self.bot.send_message(
+                        user.telegram_chat_id,
+                        f"{RELOGIN_TEXT}\nДо этого автоматический разбор пробежек приостановлен.",
+                        parse_mode="HTML",
+                    )
+                except Exception as exc:  # например, пользователь заблокировал бота: опрос остальных идёт дальше
+                    logger.warning("Не удалось уведомить об истёкшей сессии user_id=%s: %s", user.id, exc)
             except Exception as exc:  # сбой одного пользователя не останавливает опрос остальных
                 logger.exception("Ошибка опроса Garmin для user_id=%s: %s", user.id, exc)
         logger.info("Опрос Garmin завершён: пользователей %d, разобрано тренировок %d", len(users), analyzed)

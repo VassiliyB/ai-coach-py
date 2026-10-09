@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from garminconnect import (
     Garmin,
     GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
     GarminConnectTooManyRequestsError,
 )
 
@@ -101,8 +102,14 @@ class GarminClient:
             return client
         except GarminConnectTooManyRequestsError as exc:
             raise GarminRateLimitError("Превышен лимит запросов к Garmin API (429).") from exc
-        except Exception as exc:
+        except GarminConnectAuthenticationError as exc:
+            # Только здесь токены действительно непригодны: вызывающий код сбрасывает привязку
             raise GarminAuthError("Сессия истекла. Требуется повторный вход.") from exc
+        except GarminConnectConnectionError as exc:
+            raise GarminClientError(f"Нет связи с Garmin: {exc}") from exc
+        except Exception as exc:
+            # Непонятная ошибка не повод удалять токены: они могут быть рабочими
+            raise GarminClientError(f"Сбой при подключении к Garmin: {exc}") from exc
 
     def _fetch_last_activity_sync(self, chat_id: int) -> Optional[Dict[str, Any]]:
         client = self._init_session_sync(chat_id)
