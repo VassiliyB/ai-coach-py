@@ -25,10 +25,10 @@ class Settings(BaseSettings):
     ASK_DAILY_LIMIT: int = Field(default=8, ge=0)
 
     # LLM: провайдер выбирается здесь, остальной код работает через общий интерфейс generate_response
-    LLM_PROVIDER: Literal["groq", "claude"] = "groq"
+    LLM_PROVIDER: Literal["groq", "claude", "omniroute"] = "groq"
 
     # LLM (Groq)
-    GROQ_API_KEY: SecretStr = Field(..., description="API-ключ Groq Cloud")
+    GROQ_API_KEY: Optional[SecretStr] = Field(default=None, description="API-ключ Groq Cloud")
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     # 120b: 20b на неделях с каталогом тренировок не укладывается в 3 попытки (живая проверка)
     GROQ_MODEL: str = "openai/gpt-oss-120b"
@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[SecretStr] = Field(default=None, description="API-ключ Anthropic")
     CLAUDE_MODEL: str = "claude-haiku-5-5"
     CLAUDE_EFFORT: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+
+    # LLM (OmniRoute): локальный шлюз с OpenAI-совместимым API, сам выбирает провайдера и переключает при сбоях.
+    # Ключ создаётся в панели OmniRoute (API Keys), модель это имя модели или комбо из его каталога
+    OMNIROUTE_API_KEY: Optional[SecretStr] = Field(default=None, description="API-ключ OmniRoute")
+    OMNIROUTE_BASE_URL: str = "http://localhost:20128/v1"
+    OMNIROUTE_MODEL: Optional[str] = None
 
     # База данных PostgreSQL (асинхронный диалект asyncpg)
     DATABASE_URL: SecretStr = Field(..., description="URL подключения к БД Postgres")
@@ -92,6 +98,10 @@ class Settings(BaseSettings):
         """Без ключа выбранного провайдера бот упал бы только на первом запросе к модели."""
         if self.LLM_PROVIDER == "claude" and self.ANTHROPIC_API_KEY is None:
             raise ValueError("LLM_PROVIDER=claude, но ANTHROPIC_API_KEY не задан")
+        if self.LLM_PROVIDER == "groq" and self.GROQ_API_KEY is None:
+            raise ValueError("LLM_PROVIDER=groq, но GROQ_API_KEY не задан")
+        if self.LLM_PROVIDER == "omniroute" and (self.OMNIROUTE_API_KEY is None or not self.OMNIROUTE_MODEL):
+            raise ValueError("LLM_PROVIDER=omniroute, но OMNIROUTE_API_KEY или OMNIROUTE_MODEL не задан")
         from services.user_time import normalize_timezone  # чистый модуль: без циклического импорта
         if normalize_timezone(self.DEFAULT_TIMEZONE) is None:
             raise ValueError(f"DEFAULT_TIMEZONE={self.DEFAULT_TIMEZONE!r}: неизвестный часовой пояс")

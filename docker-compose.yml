@@ -61,6 +61,11 @@ services:
       GARMIN_TOKENS_DIR: /app/.garmin_tokens
       REDIS_URL: redis://redis:6379/0
       BACKUP_DIR: /backups
+      # Шлюз OmniRoute (LLM_PROVIDER=omniroute) работает на хосте: localhost контейнера это сам контейнер
+      OMNIROUTE_BASE_URL: http://host.docker.internal:20128/v1
+    # Docker Desktop знает это имя сам, на Linux его нужно добавить (адрес моста docker0)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - garmin_tokens:/app/.garmin_tokens
       # Только чтение: бот проверяет, что копирование не остановилось (services/backup_watch.py)

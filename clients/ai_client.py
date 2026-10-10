@@ -17,14 +17,19 @@ logger = logging.getLogger(__name__)
 
 
 class AIClient:
-    """Асинхронный клиент для взаимодействия с Groq Cloud LLM API."""
+    """Асинхронный клиент OpenAI-совместимого API: Groq Cloud (по умолчанию) или шлюз OmniRoute."""
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: Optional[Any] = None,
         base_url: Optional[str] = None,
         default_model: Optional[str] = None,
+        tpm_limit: Optional[int] = None,
+        name: str = "Groq",
     ) -> None:
+        self.name = name  # для логов: какой сервис ответил ошибкой
+        # Лимит токенов в минуту для подгонки max_tokens: у Groq из настроек, у шлюза свои лимиты (0)
+        self.tpm_limit = settings.GROQ_TPM_LIMIT if tpm_limit is None else tpm_limit
         raw_key = api_key or settings.GROQ_API_KEY
         # В конфиге ключ хранится как SecretStr: для запроса нужна обычная строка
         self.api_key = raw_key.get_secret_value() if isinstance(raw_key, SecretStr) else raw_key
@@ -49,7 +54,7 @@ class AIClient:
                 if delay is None:
                     raise
                 logger.warning(
-                    "Лимит запросов Groq (429), повтор %d/%d через %.1f с", attempt, RATE_LIMIT_RETRIES, delay,
+                    "Лимит запросов %s (429), повтор %d/%d через %.1f с", self.name, attempt, RATE_LIMIT_RETRIES, delay,
                 )
                 await asyncio.sleep(delay)
 
@@ -73,12 +78,12 @@ class AIClient:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         # Иначе длинный запрос (повтор генератора с прошлым ответом) Groq отклонит с 413 ещё до генерации
-        fitted = fit_max_tokens(messages, max_tokens, settings.GROQ_TPM_LIMIT)
+        fitted = fit_max_tokens(messages, max_tokens, self.tpm_limit)
 
         try:
             logger.debug(
-                "Отправка запроса в Groq (модель: %s, сообщений: %d, json: %s, max_tokens: %d)",
-                target_model, len(messages), json_mode, fitted,
+                "Отправка запроса в %s (модель: %s, сообщений: %d, json: %s, max_tokens: %d)",
+                self.name, target_model, len(messages), json_mode, fitted,
             )
             response = await self._create_with_rate_limit_retry(
                 model=target_model,
@@ -95,16 +100,16 @@ class AIClient:
         except AIClientError:
             raise
         except RateLimitError as exc:
-            logger.error("Превышен лимит запросов к Groq (TPM/RPM): %s", exc)
+            logger.error("Превышен лимит запросов к %s (TPM/RPM): %s", self.name, exc)
             raise AIClientError("Сервер ИИ перегружен запросами. Попробуйте позже.") from exc
         except APIConnectionError as exc:
-            logger.error("Сетевая ошибка при обращении к Groq API: %s", exc)
+            logger.error("Сетевая ошибка при обращении к %s: %s", self.name, exc)
             raise AIClientError("Не удалось связаться с сервером ИИ. Проверьте сеть.") from exc
         except APIStatusError as exc:
             if json_mode and exc.status_code == 400 and getattr(exc, "code", None) == "json_validate_failed":
-                logger.warning("Groq отклонил ответ модели: некорректный JSON")
+                logger.warning("%s отклонил ответ модели: некорректный JSON", self.name)
                 raise AIResponseFormatError("ИИ вернул некорректный JSON. Попробуйте ещё раз.") from exc
-            logger.error("Ошибка Groq API HTTP %s: %s", exc.status_code, exc.message)
+            logger.error("Ошибка %s API HTTP %s: %s", self.name, exc.status_code, exc.message)
             # Текст ошибки API пользователю не показываем: он на английском и с технической выдачей
             raise AIClientError(f"Ошибка ИИ-сервиса (код {exc.status_code}). Попробуйте позже.") from exc
         except Exception as exc:
