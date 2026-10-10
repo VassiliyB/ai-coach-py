@@ -4,11 +4,13 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from services.user_time import (
+    REMINDER_OFF,
     format_offset,
     is_weekly_send_time,
     local_today,
     normalize_timezone,
     offset_from_activity,
+    parse_reminder_hour,
     to_tzinfo,
 )
 
@@ -91,3 +93,17 @@ def test_detect_utc_offset_uses_latest_activity_with_times():
     ]
     assert detect_utc_offset(runs) == "UTC+05:00"
     assert detect_utc_offset([]) is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("6", 6), ("06", 6), ("6:00", 6), ("07.00", 7), (" 23 ", 23), ("0", 0),
+    ("выкл", REMINDER_OFF), ("OFF", REMINDER_OFF), ("нет", REMINDER_OFF),
+])
+def test_parse_reminder_hour(text, expected):
+    assert parse_reminder_hour(text) == expected
+
+
+@pytest.mark.parametrize("text", ["", "24", "6:30", "семь", "-1", "6 утра", "7:5"])
+def test_parse_reminder_hour_rejects(text):
+    # Минуты не :00 не принимаются: напоминания проверяются раз в час
+    assert parse_reminder_hour(text) is None

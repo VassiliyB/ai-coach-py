@@ -34,7 +34,7 @@ from services.macro_replan import (
 from services.message_service import MessageService
 from services.plan_calendar import DATE_FORMAT, monday_of, next_week_dates, plan_total_weeks, plan_week_number
 from services.plan_generator import PlanGenerator, target_km_for_week
-from services.plan_renderer import render_replan, render_vdot_review, render_week
+from services.plan_renderer import render_replan, render_today, render_vdot_review, render_week, today_workout
 from services.plan_storage import parse_macro, parse_week
 from services.race_goal import assess_goal, race_distance_m, render_goal_after_review
 from services.race_result import goal_margin
@@ -354,6 +354,16 @@ class TrainingSchedulerService:
                 max_instances=1,
                 coalesce=True,
             )
+        # Каждый час в :00: у кого по местному времени наступил час напоминания, тому тренировка дня.
+        # Задача есть всегда: свой час могут задать и при выключенном REMINDER_HOUR по умолчанию
+        self.scheduler.add_job(
+            self.morning_reminder_tick,
+            trigger=CronTrigger(minute=0),
+            id="morning_reminder_tick",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
         if self.backup_dir is not None:
             # Раз в день: копирование БД не остановилось (иначе ERROR и уведомление админам)
             self.scheduler.add_job(
@@ -369,6 +379,37 @@ class TrainingSchedulerService:
             "Фоновый планировщик запущен (недели: ВС с 15:00 по времени пользователя; опрос Garmin: %s).",
             f"каждые {self.poll_minutes} мин" if self.activity_poller else "выключен",
         )
+
+    async def morning_reminder_tick(self, now_utc: Optional[datetime] = None) -> int:
+        """Ежечасно: тем, у кого по их поясу наступил их час напоминания (/reminder, по умолчанию REMINDER_HOUR),
+        тренировка дня из сохранённой недели.
+
+        Модель и Garmin не нужны: день уже в БД, темп и пульс считает код.
+        shortcut: проверка только в начале часа; если бот был выключен в этот час, напоминание за день пропадает.
+        """
+        now_utc = now_utc or datetime.now(timezone.utc)
+        due = []
+        async with async_session_maker() as session:
+            for user, plan, profile in await UserService.get_all_active_plans_with_users(session):
+                local = local_now(UserService.timezone_of(user), now_utc)
+                if local.hour != UserService.reminder_hour_of(user):   # -1 (выключено) не совпадёт ни с каким часом
+                    continue
+                weekly = await UserService.get_weekly_plan_by_start(session, plan.id, monday_of(local.date()))
+                day = today_workout(parse_week(weekly.plan_details) if weekly else None, local.date())
+                if day is not None:
+                    due.append((user, profile, day, local.date()))
+
+        sent = 0
+        for user, profile, day, today in due:   # сессия БД закрыта: отправка не держит соединение
+            text = render_today(day, today, zones_for_profile(profile), profile_hr_basis(profile))
+            try:
+                await self.bot.send_message(chat_id=user.telegram_chat_id, text=text, parse_mode="HTML")
+                sent += 1
+            except TelegramAPIError as exc:   # пользователь заблокировал бота: не повод будить админа
+                logger.warning("Напоминание не отправлено (chat_id=%s): %s", user.telegram_chat_id, exc)
+        if sent:
+            logger.info("Утренние напоминания: отправлено %d", sent)
+        return sent
 
     async def check_backups(self) -> None:
         check_backups(self.backup_dir, datetime.now(timezone.utc).date())

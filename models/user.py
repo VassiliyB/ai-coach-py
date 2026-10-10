@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, String, func
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, SmallInteger, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base, utcnow
@@ -23,6 +23,7 @@ class AppUser(Base):
         CheckConstraint(
             f"access IN ('{ACCESS_PENDING}', '{ACCESS_APPROVED}', '{ACCESS_BLOCKED}')", name="access",
         ),
+        CheckConstraint("reminder_hour BETWEEN -1 AND 23", name="reminder_hour"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -32,6 +33,8 @@ class AppUser(Base):
     garmin_linked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     # Имя IANA ('Asia/Almaty') или смещение ('UTC+05:00'); NULL = settings.DEFAULT_TIMEZONE
     timezone: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Час утреннего напоминания по поясу пользователя (/reminder): NULL = settings.REMINDER_HOUR, -1 = выключено
+    reminder_hour: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
     access: Mapped[str] = mapped_column(
         String(16), default=ACCESS_PENDING, server_default=ACCESS_PENDING, nullable=False,
     )

@@ -95,6 +95,9 @@ class UserRepository:
     async def set_timezone(self, user_id: int, tz: Optional[str]) -> None:
         await self.session.execute(update(AppUser).where(AppUser.id == user_id).values(timezone=tz))
 
+    async def set_reminder_hour(self, user_id: int, hour: Optional[int]) -> None:
+        await self.session.execute(update(AppUser).where(AppUser.id == user_id).values(reminder_hour=hour))
+
     async def get_profile(self, user_id: int) -> Optional[AthleteProfile]:
         result = await self.session.execute(select(AthleteProfile).where(AthleteProfile.user_id == user_id))
         return result.scalar_one_or_none()

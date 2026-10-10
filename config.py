@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     ADMIN_ALERTS: bool = True
     # Вопросов /ask в день на пользователя (по его поясу, считается по llm_usage); 0 = без лимита
     ASK_DAILY_LIMIT: int = Field(default=8, ge=0)
+    # Час утреннего напоминания по умолчанию (пояс пользователя); -1 = выключено. Свой час задаёт /reminder
+    REMINDER_HOUR: int = Field(default=7, ge=-1, le=23)
 
     # LLM: провайдер выбирается здесь, остальной код работает через общий интерфейс generate_response
     LLM_PROVIDER: Literal["groq", "claude", "omniroute"] = "groq"

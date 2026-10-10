@@ -22,7 +22,7 @@ from services.heart_rate import (
 )
 from services.user_locks import UserLocks
 from services.user_service import UserService
-from services.user_time import local_now, normalize_timezone
+from services.user_time import REMINDER_OFF, local_now, normalize_timezone, parse_reminder_hour
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -69,6 +69,51 @@ async def handle_timezone(message: Message, command: CommandObject) -> None:
         f"✅ Часовой пояс: <b>{html.escape(tz)}</b>, сейчас у вас "
         f"<b>{local_now(UserService.timezone_of(user)):%H:%M %d.%m}</b>.",
         parse_mode="HTML",
+    )
+
+
+REMINDER_HELP = (
+    "• <code>/reminder 6</code> или <code>/reminder 6:00</code> — присылать в 6:00;\n"
+    "• <code>/reminder выкл</code> — не присылать;\n"
+    "• <code>/reminder сброс</code> — время по умолчанию.\n"
+    "Время по вашему часовому поясу (<code>/timezone</code>), только целый час."
+)
+REMINDER_RESET_WORDS = {"сброс", "сбросить", "reset", "default"}
+
+
+def _reminder_status(hour: int, own: bool) -> str:
+    if hour == REMINDER_OFF:
+        return "🔕 Утреннее напоминание о тренировке выключено."
+    source = "" if own else " (по умолчанию)"
+    return f"⏰ Тренировка дня приходит в <b>{hour}:00</b>{source}. В дни отдыха напоминания нет."
+
+
+@router.message(Command("reminder"))
+async def handle_reminder(message: Message, command: CommandObject) -> None:
+    """Время утреннего напоминания о тренировке дня (своё у каждого пользователя)."""
+    async with async_session_maker() as session:
+        user = await UserService.get_or_create_user(session, message.chat.id)
+        if not command.args:
+            await message.answer(
+                f"{_reminder_status(UserService.reminder_hour_of(user), user.reminder_hour is not None)}\n\n"
+                f"{REMINDER_HELP}",
+                parse_mode="HTML",
+            )
+            return
+
+        text = command.args.strip().lower()
+        hour = None if text in REMINDER_RESET_WORDS else parse_reminder_hour(text)
+        if hour is None and text not in REMINDER_RESET_WORDS:
+            await message.answer(
+                f"❌ Не удалось распознать время «{html.escape(command.args.strip()[:20])}».\n\n{REMINDER_HELP}",
+                parse_mode="HTML",
+            )
+            return
+        await UserService.set_reminder_hour(session, user.id, hour)
+        user.reminder_hour = hour
+
+    await message.answer(
+        f"✅ {_reminder_status(UserService.reminder_hour_of(user), hour is not None)}", parse_mode="HTML",
     )
 
 

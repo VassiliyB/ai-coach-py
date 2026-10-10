@@ -83,6 +83,18 @@ class UserService:
         await session.commit()
 
     @staticmethod
+    async def set_reminder_hour(session: AsyncSession, user_id: int, hour: Optional[int]) -> None:
+        """hour уже разобран (services.user_time.parse_reminder_hour); None возвращает час по умолчанию."""
+        await UserRepository(session).set_reminder_hour(user_id, hour)
+        await session.commit()
+
+    @staticmethod
+    def reminder_hour_of(user: AppUser) -> int:
+        """Час напоминания пользователя: свой или по умолчанию из настроек; -1 = выключено."""
+        from config import settings
+        return settings.REMINDER_HOUR if user.reminder_hour is None else user.reminder_hour
+
+    @staticmethod
     def timezone_of(user: AppUser) -> tzinfo:
         """Часовой пояс пользователя; если не задан, пояс по умолчанию из настроек."""
         from config import settings

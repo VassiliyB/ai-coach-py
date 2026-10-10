@@ -61,6 +61,24 @@ def to_tzinfo(value: Optional[str], default: str = "UTC") -> tzinfo:
     return ZoneInfo(canonical)
 
 
+REMINDER_OFF = -1
+_REMINDER_OFF_WORDS = {"выкл", "выключить", "нет", "off"}
+_REMINDER_HOUR_RE = re.compile(r"^(\d{1,2})(?:[:.](\d{2}))?$")
+
+
+def parse_reminder_hour(text: str) -> Optional[int]:
+    """'6', '06:00', '7.00' -> час 0–23; 'выкл' -> REMINDER_OFF. None: не распознано или минуты не :00
+    (напоминания проверяются раз в час)."""
+    text = (text or "").strip().lower()
+    if text in _REMINDER_OFF_WORDS:
+        return REMINDER_OFF
+    match = _REMINDER_HOUR_RE.match(text)
+    if not match or (match.group(2) not in (None, "00")):
+        return None
+    hour = int(match.group(1))
+    return hour if 0 <= hour <= 23 else None
+
+
 def local_now(tz: tzinfo, now_utc: Optional[datetime] = None) -> datetime:
     return (now_utc or datetime.now(timezone.utc)).astimezone(tz)
 

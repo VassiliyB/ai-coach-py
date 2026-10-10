@@ -87,6 +87,19 @@ def _render_day(day: PlannedDay, zones: Optional[TrainingZones], hr_basis: HrRef
     return "\n".join(lines)
 
 
+def today_workout(week: Optional[WeekPlan], today: date) -> Optional[PlannedDay]:
+    """Тренировка недели на сегодня; None в день отдыха или без недели."""
+    for day in week.days if week else []:
+        if day.day == today.isoweekday():
+            return None if day.type == WorkoutType.REST else day
+    return None
+
+
+def render_today(day: PlannedDay, today: date, zones: Optional[TrainingZones], hr_basis: HrRef) -> str:
+    """Утреннее напоминание: день расписания в том же виде, что в неделе."""
+    return f"☀️ <b>Тренировка на сегодня</b>{SEP}{today:%d.%m}\n\n{_render_day(day, zones, hr_basis)}"
+
+
 def render_week(
     week: WeekPlan,
     *,

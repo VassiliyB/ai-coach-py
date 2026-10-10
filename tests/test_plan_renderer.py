@@ -2,7 +2,7 @@ from datetime import date
 
 from schemas.plan import MacroPlan, WeekPlan
 from services.coach_service import calculate_zones
-from services.plan_renderer import render_macro, render_plan_overview, render_week
+from services.plan_renderer import render_macro, render_plan_overview, render_today, render_week, today_workout
 
 ZONES = calculate_zones(50)
 
@@ -232,3 +232,19 @@ def test_week_shows_adjustment():
     assert "🔄 <b>Корректировка:</b>" in text and "&lt;усталости&gt;" in text
     assert_balanced(text)
     assert "Корректировка" not in render(make_week(), adjustment=WeekAdjustment(target_km=30))
+
+
+def test_today_workout_skips_rest():
+    week = make_week()
+    assert today_workout(week, date(2026, 10, 12)) is None          # пн: отдых, напоминания нет
+    assert today_workout(week, date(2026, 10, 13)).type.value == "threshold"
+    assert today_workout(week, date(2026, 10, 16)).type.value == "cross"   # ОФП тоже напоминаем
+    assert today_workout(None, date(2026, 10, 13)) is None          # недели в БД нет
+
+
+def test_render_today_uses_day_rendering():
+    day = today_workout(make_week(), date(2026, 10, 13))
+    text = render_today(day, date(2026, 10, 13), ZONES, 190)
+    assert text.startswith("☀️ <b>Тренировка на сегодня</b>")
+    assert "13.10" in text and "8 км" in text
+    assert str(ZONES.threshold) in text and "уд/мин" in text      # темп и пульс считает код
