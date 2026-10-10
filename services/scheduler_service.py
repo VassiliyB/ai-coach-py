@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -44,9 +44,7 @@ from services.user_time import WEEKLY_SEND_HOUR, is_weekly_send_time, local_now,
 from services.vdot_review import RECENT_WEEKS, longest_gap_days, review_due, review_vdot
 from services.week_adaptation import (
     RecoverySignals,
-    RunFact,
     WeekAdjustment,
-    WeekReview,
     adjust_next_week,
     review_to_dict,
     review_week,
@@ -122,7 +120,7 @@ class TrainingSchedulerService:
         await self._review_vdot(user, plan, profile, week_number, today)  # обновляет profile.vdot
         zones = zones_for_profile(profile)
         hr_basis = profile_hr_basis(profile)
-        adjustment, macro, summary_sent = await self._adapt_week(
+        adjustment, macro, summary_text = await self._adapt_week(
             user, plan, macro, week_number, today, zones, hr_basis,
         )
         logger.info(
@@ -153,7 +151,11 @@ class TrainingSchedulerService:
                 plan=week,
             )
 
-        # 3. Текст собирает код: темп по VDOT, пульс по ЧССmax или ПАНО, текст модели экранирован
+        # 3. Итог прошлой недели только после сохранения новой: если генерация упала, рассылка повторит
+        #    попытку через час, и итог иначе пришёл бы снова
+        summary_sent = summary_text is not None and await self._send_week_summary(user.telegram_chat_id, summary_text)
+
+        # 4. Текст собирает код: темп по VDOT, пульс по ЧССmax или ПАНО, текст модели экранирован
         text = render_week(
             week,
             target_race=plan.target_race,
@@ -223,17 +225,17 @@ class TrainingSchedulerService:
         today: date,
         zones: Optional[TrainingZones],
         hr_basis: HrRef,
-    ) -> Tuple[Optional[WeekAdjustment], MacroPlan, bool]:
+    ) -> Tuple[Optional[WeekAdjustment], MacroPlan, Optional[str]]:
         """Адаптация по факту: поправка следующей недели (уровень 1) и пересчёт макроплана по событиям (уровень 3).
 
-        Сравнивает план текущей недели в БД с пробежками Garmin, отправляет итог недели, сохраняет факт,
+        Сравнивает план текущей недели в БД с пробежками Garmin, собирает итог недели, сохраняет факт,
         при перерыве или двух слабых неделях подряд пересчитывает оставшийся километраж и сообщает об этом.
-        Возвращает (поправка или None без данных Garmin, актуальный макроплан, отправлен ли итог недели).
+        Возвращает (поправка или None без данных Garmin, актуальный макроплан, текст итога недели или None).
         Сбой рассылку не останавливает.
         """
         chat_id = user.telegram_chat_id
         if self.garmin is None or not user.garmin_linked or not self.garmin.has_saved_tokens(chat_id):
-            return None, macro, False
+            return None, macro, None
         current_monday = monday_of(today)
         window_start = today - timedelta(days=REPLAN_WINDOW_DAYS - 1)
         try:
@@ -246,17 +248,18 @@ class TrainingSchedulerService:
             planned = parse_week(weekly.plan_details) if weekly else None
         except GarminClientError as exc:
             logger.warning("Факт недели из Garmin не получен (chat_id=%s): %s", chat_id, exc)
-            return None, macro, False
+            return None, macro, None
         except Exception:
             logger.exception("Ошибка подготовки корректировки недели (chat_id=%s)", chat_id)
-            return None, macro, False
+            return None, macro, None
 
         runs = run_facts(facts["runs"])
         review = review_week(planned, current_monday, runs, today, zones, hr_basis) if planned else None
         if weekly is not None and review is not None and review.compliance is not None:
             async with async_session_maker() as session:
                 await UserService.set_week_review(session, weekly.id, review_to_dict(review))
-        summary_sent = await self._send_week_summary(chat_id, current_monday, runs, today, review, zones, hr_basis)
+        summary = summarize_week(current_monday, runs, today, review, zones, hr_basis)
+        summary_text = render_week_summary(summary) if has_content(summary) else None
 
         adjustment = adjust_next_week(
             target_km_for_week(macro, week_number), review,
@@ -283,18 +286,12 @@ class TrainingSchedulerService:
                 await self.bot.send_message(chat_id=chat_id, text=render_replan(replan), parse_mode="HTML")
                 macro = replan.macro
                 adjustment = adjustment_after_replan(adjustment, replan, gap)
-        return adjustment, macro, summary_sent
+        return adjustment, macro, summary_text
 
-    async def _send_week_summary(
-        self, chat_id: int, week_start: date, runs: List[RunFact], today: date,
-        review: Optional[WeekReview], zones: Optional[TrainingZones], hr_basis: HrRef,
-    ) -> bool:
+    async def _send_week_summary(self, chat_id: int, text: str) -> bool:
         """Итог уходящей недели отдельным сообщением перед новой неделей. Сбой отправки рассылку не останавливает."""
-        summary = summarize_week(week_start, runs, today, review, zones, hr_basis)
-        if not has_content(summary):
-            return False
         try:
-            await self.bot.send_message(chat_id=chat_id, text=render_week_summary(summary), parse_mode="HTML")
+            await self.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
         except TelegramAPIError as exc:
             logger.warning("Итог недели не отправлен (chat_id=%s): %s", chat_id, exc)
             return False
