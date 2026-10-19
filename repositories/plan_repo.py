@@ -22,7 +22,7 @@ class PlanRepository:
 
     async def create_active(
         self, user_id: int, target_race: str, race_date: date, total_weeks: int, plan_details: Dict[str, Any],
-        target_time_s: Optional[int] = None,
+        target_time_s: Optional[int] = None, run_days: Optional[int] = None,
     ) -> TrainingPlan:
         """Деактивирует старые планы и создаёт новый в одной транзакции."""
         # UPDATE выполняется сразу (не через autoflush), поэтому частичный unique-индекс не сработает
@@ -34,6 +34,7 @@ class PlanRepository:
         plan = TrainingPlan(
             user_id=user_id, target_race=target_race, race_date=race_date,
             total_weeks=total_weeks, plan_details=plan_details, active=True, target_time_s=target_time_s,
+            run_days=run_days,
         )
         self.session.add(plan)
         await self.session.flush()

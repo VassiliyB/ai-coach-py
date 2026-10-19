@@ -11,8 +11,10 @@ from aiogram.types import CallbackQuery, Message
 from bot.keyboards import (
     GOAL_NONE,
     GOAL_SUGGESTED,
+    RUN_DAYS_PREFIX,
     get_garmin_export_keyboard,
     get_goal_keyboard,
+    get_run_days_keyboard,
     get_target_distances_keyboard,
 )
 from bot.states import PlanCreationStates
@@ -24,6 +26,7 @@ from services.message_service import MessageService
 from services.plan_calendar import intro_days, monday_of, plan_total_weeks
 from services.plan_generator import PlanGenerationError, PlanGenerator
 from services.plan_renderer import render_intro_days, render_macro
+from services.plan_validator import RUN_DAYS_RANGE
 from services.race_goal import (
     GOAL_FORMATS,
     RACE_DISTANCES,
@@ -76,10 +79,31 @@ async def handle_distance_selected(callback: CallbackQuery, state: FSMContext) -
     distance_name, distance_m = RACE_DISTANCES.get(callback.data, ("Забег", None))
 
     await state.update_data(target_race=distance_name, distance_m=distance_m)
-    await state.set_state(PlanCreationStates.waiting_for_date)
+    await state.set_state(PlanCreationStates.waiting_for_run_days)
 
     await callback.message.edit_text(
         f"Выбрана дистанция: <b>{distance_name}</b>\n\n"
+        "🏃 Сколько дней в неделю вы готовы бегать?",
+        reply_markup=get_run_days_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(PlanCreationStates.waiting_for_run_days, F.data.startswith(RUN_DAYS_PREFIX))
+async def handle_run_days_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    """Число беговых дней в неделю и переход к ожиданию даты старта."""
+    value = callback.data.removeprefix(RUN_DAYS_PREFIX)
+    if not value.isdigit() or int(value) not in RUN_DAYS_RANGE:
+        await callback.answer()
+        return
+    run_days = int(value)
+    data = await state.get_data()
+    await state.update_data(run_days=run_days)
+    await state.set_state(PlanCreationStates.waiting_for_date)
+
+    await callback.message.edit_text(
+        f"Выбрана дистанция: <b>{data.get('target_race', 'Забег')}</b>, бег <b>{run_days} дн. в неделю</b>\n\n"
         "📅 Введите дату забега в формате: <b>ДД.ММ.ГГГГ</b> (например, <code>15.06.2027</code>):",
         parse_mode="HTML",
     )
@@ -230,6 +254,7 @@ async def _create_plan(
     race_date = date.fromisoformat(data["race_date"])
     total_weeks = data["total_weeks"]
     distance_m = data.get("distance_m")
+    run_days = data.get("run_days")
     goal_s = int(assessment.target_time_s) if assessment else None
     goal_text = goal_prompt_text(assessment, distance_m) if assessment and distance_m else None
 
@@ -257,6 +282,7 @@ async def _create_plan(
             race_date=race_date.isoformat(),
             total_weeks=total_weeks,
             goal_text=goal_text,
+            run_days=run_days,
         )
 
         # 3. Сохранение в БД (старый активный план деактивируется в той же транзакции)
@@ -269,6 +295,7 @@ async def _create_plan(
                 total_weeks=total_weeks,
                 plan=macro,
                 target_time_s=goal_s,
+                run_days=run_days,
             )
 
         await status_msg.delete()
@@ -284,7 +311,7 @@ async def _create_plan(
         await _send_intro_days(
             message, plan_generator, profile_dict, target_race, today,
             weekly_km=weekly_km, zones=zones, hr_basis=profile_hr_basis(profile),
-            user_id=user_id, plan_id=saved.id, garmin_linked=garmin_linked,
+            user_id=user_id, plan_id=saved.id, garmin_linked=garmin_linked, run_days=run_days,
         )
 
     except PlanGenerationError as exc:
@@ -314,6 +341,7 @@ async def _send_intro_days(
     user_id: int,
     plan_id: int,
     garmin_linked: bool,
+    run_days: Optional[int],
 ) -> None:
     """Тренировки с завтрашнего дня до воскресенья по поясу пользователя.
 
@@ -326,6 +354,7 @@ async def _send_intro_days(
     try:
         week = await plan_generator.generate_intro_days(
             athlete_profile=profile_dict, target_race=target_race, days=days, weekly_km=weekly_km, zones=zones,
+            run_days=run_days,
         )
         async with async_session_maker() as session:
             weekly = await UserService.save_weekly_plan(

@@ -185,9 +185,11 @@ class UserService:
     async def save_training_plan(
         session: AsyncSession, user_id: int, target_race: str,
         race_date: date, total_weeks: int, plan: MacroPlan, target_time_s: Optional[int] = None,
+        run_days: Optional[int] = None,
     ) -> TrainingPlan:
         saved = await PlanRepository(session).create_active(
             user_id, target_race, race_date, total_weeks, plan_to_details(plan), target_time_s=target_time_s,
+            run_days=run_days,
         )
         await session.commit()
         return saved

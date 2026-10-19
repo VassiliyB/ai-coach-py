@@ -138,6 +138,7 @@ class TrainingSchedulerService:
             week_end=week_end,
             zones=zones,
             adjustment=adjustment,
+            run_days=plan.run_days,
         )
 
         # 2. Сохранение (повторная генерация той же недели перезаписывает запись)

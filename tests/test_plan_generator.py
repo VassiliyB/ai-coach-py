@@ -341,3 +341,15 @@ def test_unchanged_adjustment_adds_nothing_to_prompt():
         PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", adjustment=WeekAdjustment(target_km=38),
     ))
     assert "КОРРЕКТИРОВКА" not in ai.calls[0]["messages"][-1]["content"]
+
+
+def test_week_prompt_and_check_use_run_days():
+    macro = MacroPlan.model_validate(macro_data())
+    # good_week_data на 5 беговых дней: подходит при выборе 5, при выборе 4 отклоняется
+    gen, ai = generator([dumps(good_week_data())])
+    asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", run_days=5))
+    assert "Беговых дней (не rest и не cross) ровно 5" in ai.calls[0]["messages"][-1]["content"]
+    gen, ai = generator([dumps(good_week_data())] * 3)
+    with pytest.raises(PlanGenerationError) as exc_info:
+        asyncio.run(gen.generate_week(PROFILE, "21.1 км", macro, 5, "01.03.2027", "07.03.2027", run_days=4))
+    assert any("беговых дней 5" in p for p in exc_info.value.problems)

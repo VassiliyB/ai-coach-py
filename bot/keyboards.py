@@ -9,6 +9,8 @@ from aiogram.types import (
     WebAppInfo,
 )
 
+from services.plan_validator import RUN_DAYS_RANGE
+
 GARMIN_WEBAPP_URL = "https://vassiliyb.github.io/garmin-login/"
 
 
@@ -38,6 +40,16 @@ def get_target_distances_keyboard() -> InlineKeyboardMarkup:
         ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+RUN_DAYS_PREFIX = "run_days:"
+
+
+def get_run_days_keyboard() -> InlineKeyboardMarkup:
+    """Шаг /plan: сколько дней в неделю бегать."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=str(n), callback_data=f"{RUN_DAYS_PREFIX}{n}") for n in RUN_DAYS_RANGE
+    ]])
 
 
 ACCESS_APPROVE_PREFIX = "access:approve:"

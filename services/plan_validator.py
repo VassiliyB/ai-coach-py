@@ -32,11 +32,32 @@ MIN_SHARE_OF_FIRST_WEEK = 0.70    # вне подводки неделя не н
 TAPER_PHASE = 4
 KM_EPS = 0.05
 
+# Беговых дней в неделю, выбор пользователя в /plan. Остальные дни: отдых или ОФП
+RUN_DAYS_RANGE = range(3, 7)
+# При 3-4 днях 30% не хватает: длительный не смог бы быть самой длинной пробежкой (3 дня по 33%)
+LONG_MAX_SHARE_BY_RUN_DAYS = {3: 0.40, 4: 0.35}
+# Hard-easy и 80/20: при 3 днях одна качественная, длительный и лёгкий
+MAX_QUALITY_BY_RUN_DAYS = {3: 1, 4: 2, 5: 2, 6: 3}
+RUN_FREE_TYPES = (WorkoutType.REST, WorkoutType.CROSS)
+
 # Типы тренировок, запрещённые в фазе. Фаза I (закладка фундамента) по Дэниелсу: только лёгкий бег,
 # длительный и ускорения; ускорения описываются внутри easy, качественных тренировок нет.
 PHASE_FORBIDDEN_TYPES: Dict[int, FrozenSet[WorkoutType]] = {
     1: QUALITY_TYPES,
 }
+
+
+def long_max_share(run_days: Optional[int]) -> float:
+    """Предел длительного как доля недели; run_days None: план без выбора дней."""
+    return LONG_MAX_SHARE_BY_RUN_DAYS.get(run_days, LONG_MAX_SHARE)
+
+
+def max_quality_for(run_days: Optional[int]) -> int:
+    return MAX_QUALITY_BY_RUN_DAYS.get(run_days, MAX_QUALITY_SESSIONS)
+
+
+def run_day_count(week: WeekPlan) -> int:
+    return sum(1 for d in week.days if d.type not in RUN_FREE_TYPES)
 
 
 def long_run_max_km(zones: TrainingZones) -> float:
@@ -50,12 +71,14 @@ def validate_week(
     phase_number: Optional[int] = None,
     zones: Optional[TrainingZones] = None,
     max_quality: Optional[int] = None,
+    run_days: Optional[int] = None,
 ) -> List[str]:
     """Проверяет недельный микроцикл.
 
     target_km: плановый километраж недели из макроплана; phase_number: номер фазы (1-4) для правил фазы;
     zones: зоны темпа атлета, без них потолок длительного бега по времени не проверяется;
-    max_quality: предел качественных тренировок из корректировки по факту прошлой недели (week_adaptation).
+    max_quality: предел качественных тренировок из корректировки по факту прошлой недели (week_adaptation);
+    run_days: беговых дней в неделю по выбору атлета (None: не ограничено).
     """
     problems: List[str] = []
     total = week.total_km
@@ -83,12 +106,13 @@ def validate_week(
                 )
 
     # 3. Длительный бег
+    long_share = long_max_share(run_days)
     for d in week.days:
         if d.type != WorkoutType.LONG:
             continue
-        if (d.distance_km or 0) > LONG_MAX_SHARE * total + KM_EPS:
+        if (d.distance_km or 0) > long_share * total + KM_EPS:
             problems.append(
-                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км больше {LONG_MAX_SHARE:.0%} "
+                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км больше {long_share:.0%} "
                 f"недельного километража ({total:g} км)"
             )
         if zones is not None and d.distance_km > long_run_max_km(zones) + KM_EPS:
@@ -107,17 +131,21 @@ def validate_week(
 
     # 4. Количество качественных тренировок и дни отдыха
     quality_count = sum(1 for d in week.days if d.type in QUALITY_TYPES)
-    if quality_count > MAX_QUALITY_SESSIONS:
-        problems.append(
-            f"слишком много качественных тренировок: {quality_count} (максимум {MAX_QUALITY_SESSIONS})"
-        )
+    quality_cap = max_quality_for(run_days)
+    if quality_count > quality_cap:
+        problems.append(f"слишком много качественных тренировок: {quality_count} (максимум {quality_cap})")
     elif max_quality is not None and quality_count > max_quality:
         problems.append(
             f"качественных тренировок {quality_count}, а после прошлой недели допустимо не больше {max_quality}"
         )
-    rest_days = sum(1 for d in week.days if d.type in (WorkoutType.REST, WorkoutType.CROSS))
+    rest_days = sum(1 for d in week.days if d.type in RUN_FREE_TYPES)
     if rest_days < MIN_REST_DAYS:
         problems.append("нет ни одного дня отдыха или ОФП")
+    if run_days is not None and run_day_count(week) != run_days:
+        problems.append(
+            f"беговых дней {run_day_count(week)}, а атлет бегает {run_days} дн. в неделю; "
+            "остальные дни rest или cross"
+        )
 
     # 5. Типы тренировок, запрещённые в текущей фазе
     forbidden = PHASE_FORBIDDEN_TYPES.get(phase_number, frozenset())
@@ -148,12 +176,13 @@ def validate_intro_days(
     target_km: float,
     weekly_km: float,
     zones: Optional[TrainingZones] = None,
+    run_days: Optional[int] = None,
 ) -> List[str]:
     """Проверяет вводные дни до старта плана (неполная неделя перед неделей №1).
 
     active_days: номера дней (1 = Пн), на которые составляются тренировки; остальные уже прошли.
     target_km: объём вводных дней; weekly_km: обычный недельный объём атлета, от него лимит длительного
-    (доля от неполной недели была бы слишком строгой).
+    (доля от неполной недели была бы слишком строгой); run_days: беговых дней в неделю, во вводных не больше.
     """
     problems: List[str] = []
     for d in week.days:
@@ -171,10 +200,10 @@ def validate_intro_days(
     for d in week.days:
         if d.type != WorkoutType.LONG:
             continue
-        long_cap = LONG_MAX_SHARE * weekly_km
+        long_cap = long_max_share(run_days) * weekly_km
         if d.distance_km > long_cap + KM_EPS:
             problems.append(
-                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км больше {LONG_MAX_SHARE:.0%} "
+                f"{DAY_NAMES[d.day - 1]}: длительный бег {d.distance_km:g} км больше {long_max_share(run_days):.0%} "
                 f"обычного недельного объёма атлета ({weekly_km:g} км), то есть не более {long_cap:.1f} км"
             )
         if zones is not None and d.distance_km > long_run_max_km(zones) + KM_EPS:
@@ -187,9 +216,13 @@ def validate_intro_days(
             problems.append(f"{DAY_NAMES[d.day - 1]}: длительный бег короче другой тренировки")
 
     active = [d for d in week.days if d.day in active_days]
-    has_rest = any(d.type in (WorkoutType.REST, WorkoutType.CROSS) for d in active)
+    has_rest = any(d.type in RUN_FREE_TYPES for d in active)
     if len(active) >= INTRO_MIN_DAYS_FOR_REST and not has_rest:
         problems.append(f"среди {len(active)} вводных дней нет ни одного дня отдыха или ОФП")
+    if run_days is not None and run_day_count(week) > run_days:
+        problems.append(
+            f"беговых вводных дней {run_day_count(week)}, а атлет бегает не больше {run_days} дн. в неделю"
+        )
 
     total = week.total_km
     if target_km > 0 and abs(total - target_km) > TARGET_KM_TOLERANCE * target_km:

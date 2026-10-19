@@ -392,3 +392,34 @@ def test_intro_long_week_needs_rest_day():
 
 def test_intro_without_volume_skips_target_check():
     assert validate_intro_days(good_intro(), INTRO_ACTIVE, target_km=0, weekly_km=37.8) == []
+
+
+# ---------- беговых дней в неделю ----------
+
+def test_run_days_must_match_choice():
+    assert validate_week(good_week(), run_days=5) == []
+    assert has(validate_week(good_week(), run_days=4), "беговых дней 5, а атлет бегает 4")
+
+
+def test_three_run_days_allow_bigger_long_run():
+    # 30 км за 3 дня: при 30% длительный не смог бы быть самой длинной пробежкой
+    w = week([
+        day(1, "rest"), day(2, "threshold", 9, quality=2), day(3, "rest"), day(4, "easy", 9),
+        day(5, "rest"), day(6, "long", 12), day(7, "rest"),
+    ])
+    assert validate_week(w, run_days=3) == []
+    assert has(validate_week(w), "больше 30%")
+
+
+def test_three_run_days_allow_one_quality():
+    w = week([
+        day(1, "rest"), day(2, "threshold", 9, quality=2), day(3, "rest"), day(4, "interval", 9, quality=2),
+        day(5, "rest"), day(6, "long", 12), day(7, "rest"),
+    ])
+    assert has(validate_week(w, run_days=3), "максимум 1")
+
+
+def test_intro_run_days_capped():
+    assert validate_intro_days(good_intro(), INTRO_ACTIVE, target_km=21.6, weekly_km=37.8, run_days=3) == []
+    problems = validate_intro_days(good_intro(), INTRO_ACTIVE, target_km=21.6, weekly_km=37.8, run_days=2)
+    assert has(problems, "не больше 2")

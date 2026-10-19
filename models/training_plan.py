@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     func,
     text,
@@ -32,6 +33,7 @@ class TrainingPlan(Base):
         Index("uq_training_plans_one_active_per_user", "user_id",
               unique=True, postgresql_where=text("active")),
         CheckConstraint("total_weeks > 0", name="total_weeks_positive"),
+        CheckConstraint("run_days BETWEEN 3 AND 6", name="run_days"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -42,6 +44,8 @@ class TrainingPlan(Base):
     total_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
     # Целевое время забега в секундах (проверено services.race_goal); NULL: цель «по текущей форме»
     target_time_s: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Беговых дней в неделю (3-6), выбирается в /plan; NULL: старые планы без ограничения
+    run_days: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
     # Структурный план (MacroPlan) или {"legacy_text": "..."} для старых текстовых планов
     plan_details: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true", nullable=False)

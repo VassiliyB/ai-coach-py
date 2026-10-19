@@ -109,9 +109,9 @@ def intro_target_km(weekly_km: float, days: int) -> float:
     return round(weekly_km * days / 7, 1)
 
 
-def intro_long_cap_km(weekly_km: float, zones: Optional[TrainingZones]) -> float:
+def intro_long_cap_km(weekly_km: float, zones: Optional[TrainingZones], run_days: Optional[int] = None) -> float:
     """Потолок длительного во вводные дни: доля обычной недели, но не дольше LONG_MAX_MINUTES."""
-    cap = rules.LONG_MAX_SHARE * weekly_km
+    cap = rules.long_max_share(run_days) * weekly_km
     if zones is not None:
         cap = min(cap, rules.long_run_max_km(zones))
     return round(cap, 1)
@@ -128,6 +128,13 @@ def _load_knowledge() -> str:
     except (OSError, UnicodeDecodeError) as exc:
         logger.error("Не удалось прочитать базу знаний %s: %s", path, exc)
         return ""
+
+
+def _run_days_text(run_days: Optional[int]) -> str:
+    """Строка промпта о числе беговых дней (пустая для старых планов без выбора)."""
+    if run_days is None:
+        return ""
+    return f"Атлет бегает {int(run_days)} дн. в неделю, остальные дни отдых или ОФП.\n"
 
 
 def _phase_names() -> str:
@@ -213,14 +220,14 @@ class PlanGenerator:
 
     def _macro_prompt(
         self, profile: Optional[Dict[str, Any]], race: str, race_date: str, total_weeks: int,
-        goal_text: Optional[str] = None,
+        goal_text: Optional[str] = None, run_days: Optional[int] = None,
     ) -> str:
         # goal_text собирает код (services.race_goal): цифры уже проверены, модель их не пересчитывает
         goal = f"{goal_text}\n" if goal_text else ""
         return (
             f"Составь макроцикл подготовки к забегу: {_clean(race)}.\n"
             f"Дата забега: {_clean(race_date, 20)}. Недель на подготовку: {int(total_weeks)}.\n"
-            f"{goal}\n"
+            f"{goal}{_run_days_text(run_days)}\n"
             f"ПАСПОРТ АТЛЕТА:\n<data>\n{_profile_block(profile)}\n</data>\n\n"
             "Верни JSON такой структуры (это пример формата, значения подбери сам):\n"
             f"{MACRO_EXAMPLE}\n\n"
@@ -237,6 +244,7 @@ class PlanGenerator:
             f"5. Самая объёмная неделя плана находится в фазе {' или '.join(map(str, rules.PEAK_PHASES))}. "
             f"До фазы IV ни одна неделя не ниже {rules.MIN_SHARE_OF_FIRST_WEEK:.0%} от первой недели.\n"
             "6. focus — 1-2 коротких предложения о задачах фазы; notes — до 5 коротких правил предосторожности."
+            + ("\n7. Километраж реалистичен для этого числа беговых дней." if run_days is not None else "")
         )
 
     def _week_prompt(
@@ -249,6 +257,7 @@ class PlanGenerator:
         week_end: str,
         zones: Optional[TrainingZones] = None,
         adjustment: Optional[WeekAdjustment] = None,
+        run_days: Optional[int] = None,
     ) -> str:
         phase = macro.phase_for_week(week_number)
         long_limit = (
@@ -280,6 +289,7 @@ class PlanGenerator:
             f"({_clean(week_start, 20)} — {_clean(week_end, 20)}). Цель: {_clean(race)}.\n"
             f"Фаза {phase.number}: {_clean(phase.name)}. Задачи фазы: {_clean(phase.focus, 400)}.\n"
             f"Плановый километраж недели: {target:g} км (допуск ±{rules.TARGET_KM_TOLERANCE:.0%}).\n"
+            f"{_run_days_text(run_days)}"
             f"{_adjustment_block(adjustment)}\n"
             f"АТЛЕТ:\n<data>\n{_profile_block(profile)}\n</data>\n\n"
             f"{catalog}"
@@ -287,14 +297,15 @@ class PlanGenerator:
             f"{WEEK_EXAMPLE}\n\n"
             "Допустимые type: rest, easy, long, marathon, threshold, interval, repetition, cross.\n"
             "ТРЕБОВАНИЯ:\n"
-            "1. days содержит ровно 7 элементов, day от 1 (Пн) до 7 (Вс).\n"
-            "2. distance_km — общая дистанция, включая разминку и заминку. Для rest и cross её не указывай. "
+            "1. days содержит ровно 7 элементов, day от 1 (Пн) до 7 (Вс)."
+            + (f" Беговых дней (не rest и не cross) ровно {int(run_days)}." if run_days is not None else "")
+            + "\n2. distance_km — общая дистанция, включая разминку и заминку. Для rest и cross её не указывай. "
             "Сумма distance_km за неделю близка к плановому километражу.\n"
             f"{quality_rule}"
-            f"4. Длительный бег (long): не более {rules.LONG_MAX_SHARE:.0%} недельного километража{long_limit}; "
-            "он не короче любой другой тренировки недели.\n"
-            f"5. Не более {rules.MAX_QUALITY_SESSIONS} качественных тренировок; минимум {rules.MIN_REST_DAYS} день "
-            "отдыха (rest) или ОФП (cross).\n"
+            f"4. Длительный бег (long): не более {rules.long_max_share(run_days):.0%} недельного километража"
+            f"{long_limit}; он не короче любой другой тренировки недели.\n"
+            f"5. Не более {rules.max_quality_for(run_days)} качественных тренировок; "
+            f"минимум {rules.MIN_REST_DAYS} день отдыха (rest) или ОФП (cross).\n"
             "6. Две тяжёлые тренировки подряд (качественная или long) недопустимы: после них лёгкий день или отдых.\n"
             "7. description лёгких дней — коротко, без темпов и длительности в минутах (их рассчитает система); "
             "ускорения по 15-20 с можно добавить в description лёгкого бега."
@@ -356,9 +367,11 @@ class PlanGenerator:
         race_date: str,
         total_weeks: int,
         goal_text: Optional[str] = None,
+        run_days: Optional[int] = None,
     ) -> MacroPlan:
-        """goal_text: строка о целевом времени из race_goal.goal_prompt_text (None: цель по текущей форме)."""
-        prompt = self._macro_prompt(athlete_profile, target_race, race_date, total_weeks, goal_text)
+        """goal_text: строка о целевом времени из race_goal.goal_prompt_text (None: цель по текущей форме).
+        run_days: беговых дней в неделю (None: без ограничения)."""
+        prompt = self._macro_prompt(athlete_profile, target_race, race_date, total_weeks, goal_text, run_days)
         messages = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": prompt},
@@ -377,6 +390,7 @@ class PlanGenerator:
         week_end: str,
         zones: Optional[TrainingZones] = None,
         adjustment: Optional[WeekAdjustment] = None,
+        run_days: Optional[int] = None,
     ) -> WeekPlan:
         """zones: зоны темпа атлета; по ним код считает потолок длительного бега в км.
 
@@ -388,7 +402,7 @@ class PlanGenerator:
         phase_number = macro.phase_for_week(week_number).number
         options = {t.id: reps for t, reps in available(phase_number, target, zones, race_distance_m(target_race))}
         prompt = self._week_prompt(
-            athlete_profile, target_race, macro, week_number, week_start, week_end, zones, adjustment,
+            athlete_profile, target_race, macro, week_number, week_start, week_end, zones, adjustment, run_days,
         )
         messages = [
             {"role": "system", "content": self._system_prompt},
@@ -400,6 +414,7 @@ class PlanGenerator:
             # замечания обоих видов сразу, чтобы модель исправила всё за одну попытку
             lambda w: resolve_week(w, options, zones) + validate_week(
                 w, target_km=target, phase_number=phase_number, zones=zones, max_quality=max_quality,
+                run_days=run_days,
             ),
             temperature=0.4, what="недельный план",
         )
@@ -413,6 +428,7 @@ class PlanGenerator:
         days: List[date],
         weekly_km: float,
         zones: Optional[TrainingZones],
+        run_days: Optional[int] = None,
     ) -> str:
         active = {d.isoweekday() for d in days}
         day_list = ", ".join(f"{rules.DAY_NAMES[d.weekday()]} {d:%d.%m}" for d in days)
@@ -432,11 +448,12 @@ class PlanGenerator:
             "2. Это база перед фазой I: только типы rest, easy, long, cross, без качественных тренировок. "
             "Ускорения по 15-20 с можно добавить в description лёгкого бега.\n"
             "3. distance_km — общая дистанция; для rest и cross её не указывай. quality_km не указывай.\n"
-            f"4. Длительный бег (long) не длиннее {intro_long_cap_km(weekly_km, zones):g} км "
+            f"4. Длительный бег (long) не длиннее {intro_long_cap_km(weekly_km, zones, run_days):g} км "
             "и не короче любой другой тренировки.\n"
             f"5. Если вводных дней {rules.INTRO_MIN_DAYS_FOR_REST} или больше, среди них минимум один день "
             "отдыха (rest) или ОФП (cross).\n"
             "6. description — структура тренировки, без темпов и без длительности в минутах: их рассчитает система."
+            + (f"\n7. Беговых дней (не rest и не cross) не больше {int(run_days)}." if run_days is not None else "")
         )
 
     async def generate_intro_days(
@@ -446,6 +463,7 @@ class PlanGenerator:
         days: List[date],
         weekly_km: float,
         zones: Optional[TrainingZones] = None,
+        run_days: Optional[int] = None,
     ) -> WeekPlan:
         """Тренировки на дни до старта плана (с завтрашнего дня до воскресенья) как неделя из 7 дней:
         прошедшие дни и сегодня в ней rest. weekly_km: обычный недельный объём атлета."""
@@ -453,10 +471,15 @@ class PlanGenerator:
         target = intro_target_km(weekly_km, len(days))
         messages = [
             {"role": "system", "content": self._system_prompt},
-            {"role": "user", "content": self._intro_prompt(athlete_profile, target_race, days, weekly_km, zones)},
+            {
+                "role": "user",
+                "content": self._intro_prompt(athlete_profile, target_race, days, weekly_km, zones, run_days),
+            },
         ]
         return await self._generate(
             messages, WeekPlan,
-            lambda w: validate_intro_days(w, active, target_km=target, weekly_km=weekly_km, zones=zones),
+            lambda w: validate_intro_days(
+                w, active, target_km=target, weekly_km=weekly_km, zones=zones, run_days=run_days,
+            ),
             temperature=0.4, what="вводные дни",
         )

@@ -5,6 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 class PlanCreationStates(StatesGroup):
     """Состояния FSM для интерактивного создания целевого плана бега."""
     waiting_for_distance = State()  # Ожидание нажатия кнопки дистанции
+    waiting_for_run_days = State()  # Ожидание кнопки числа беговых дней в неделю
     waiting_for_date = State()      # Ожидание ввода даты старта (ДД.ММ.ГГГГ)
     waiting_for_goal = State()      # Ожидание целевого времени или темпа (или кнопки «Без цели»)
 
